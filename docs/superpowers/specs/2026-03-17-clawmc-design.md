@@ -1173,21 +1173,21 @@ src/
 
 ---
 
-## 8. Utils Layer
+## 9. Utils Layer
 
-### 8.1 `logger.js` - Sistema de Logs
+### 9.1 `logger.js` - Sistema de Logs
 
 **Níveis:** debug, info, warn, error
 **Output:** Console + arquivo (`logs/bot-YYYY-MM-DD.log`)
 **Módulos:** `logger.module('nome')` para logs específicos
 
-### 8.2 `config.js` - Carregador de Configuração
+### 9.2 `config.js` - Carregador de Configuração
 
 **Variáveis de ambiente:** `${VAR_NAME}` substituído por `process.env[VAR_NAME]`
 **Validação:** Campos obrigatórios, valores padrão
 **Métodos:** `get(path, default)`, `set(path, value)`, `save()`
 
-### 8.3 `helpers.js` - Funções Utilitárias
+### 9.3 `helpers.js` - Funções Utilitárias
 
 - `formatCoords(x, y, z)` - formata coordenadas
 - `parseCoords(str)` - parseia string de coordenadas
@@ -1202,7 +1202,131 @@ src/
 
 ---
 
-## 9. Configuração
+## 10. Community Layer (Multi-Bot Cooperation)
+
+O bot pode operar em **modo comunidade**, cooperando com outros bots no mesmo servidor para formar uma sociedade autônoma.
+
+### 10.1 Visão Geral
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     MINECRAFT SERVER                              │
+│                                                                  │
+│  ┌─────────┐    ┌─────────┐    ┌─────────┐                      │
+│  │  Bot A  │◄──►│  Bot B  │◄──►│  Bot C  │                      │
+│  │ (Luanv) │    │ (Amigo) │    │ (Outro) │                      │
+│  └────┬────┘    └────┬────┘    └────┬────┘                      │
+│       │              │              │                            │
+│       └──────────────┼──────────────┘                            │
+│                      │                                           │
+│                      ▼                                           │
+│              ┌───────────────┐                                   │
+│              │ COMMUNITY DB  │                                   │
+│              │  (Shared)     │                                   │
+│              └───────────────┘                                   │
+│                                                                  │
+│  Objetivos Compartilhados:                                      │
+│  • Construir vila                                              │
+│  • Dividir tarefas (minerar, farmar, construir)               │
+│  • Defesa cooperativa                                          │
+│  • Economia (troca de recursos)                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 10.2 Componentes
+
+| Componente | Função |
+|------------|--------|
+| **CommunityManager** | Descoberta e registro de peers |
+| **CommunicationProtocol** | Mensagens entre bots via chat |
+| **RoleManager** | Atribuição de papéis (miner, farmer, etc.) |
+| **TaskCoordinator** | Divisão e atribuição de tarefas |
+| **SharedMemory** | Sincronização de conhecimento |
+| **CommunityGoals** | Objetivos comunitários (vila, fazenda, mina) |
+
+### 10.3 Protocolo de Comunicação
+
+```javascript
+// Formato: [COMM:TYPE] {json}
+
+const MESSAGE_TYPES = {
+  HELLO: 'HELLO',           // Anúncio de presença
+  STATUS: 'STATUS',         // Atualização de status
+  TASK_REQUEST: 'TASK_REQ', // Solicitação de tarefa
+  TASK_OFFER: 'TASK_OFFER', // Oferta para tarefa
+  SYNC: 'SYNC'              // Sincronização de dados
+};
+
+// Exemplos:
+// [COMM:HELLO] {"name":"ClawMC_Luanv","owner":"Luanv","skills":["mine","explore"]}
+// [COMM:STATUS] {"pos":{"x":100,"y":64,"z":-200},"task":"mining"}
+// [COMM:TASK_REQ] {"type":"mine","resource":"iron","amount":32}
+```
+
+### 10.4 Sistema de Papéis (Roles)
+
+```javascript
+const ROLES = {
+  MINER: {
+    skills: ['mine', 'explore', 'store'],
+    priority: ['iron', 'diamond', 'redstone'],
+    territory: 'underground'
+  },
+  FARMER: {
+    skills: ['plant', 'harvest', 'breed'],
+    priority: ['wheat', 'carrot', 'animals'],
+    territory: 'surface'
+  },
+  BUILDER: {
+    skills: ['build', 'craft', 'place'],
+    priority: ['structures', 'defenses'],
+    territory: 'base'
+  },
+  EXPLORER: {
+    skills: ['explore', 'map', 'scout'],
+    priority: ['new_chunks', 'villages'],
+    territory: 'world'
+  },
+  DEFENDER: {
+    skills: ['fight', 'guard', 'patrol'],
+    priority: ['mobs', 'threats'],
+    territory: 'perimeter'
+  },
+  GATHERER: {
+    skills: ['collect', 'chop', 'store'],
+    priority: ['wood', 'stone', 'food'],
+    territory: 'surface'
+  }
+};
+```
+
+### 10.5 Configuração de Comunidade
+
+```json
+{
+  "community": {
+    "enabled": true,
+    "name": "Vila dos Bots",
+    "discovery": {
+      "autoAnnounce": true,
+      "peerTimeout": 120000
+    },
+    "roles": {
+      "autoAssign": true,
+      "preferRoles": ["miner", "explorer"]
+    },
+    "sync": {
+      "enabled": true,
+      "interval": 60000,
+      "facts": ["chest", "construction", "resource", "danger"]
+    }
+  }
+}
+```
+
+---
+
+## 11. Configuração
 
 ### 9.1 `config.json`
 
@@ -1283,7 +1407,7 @@ OPENAI_API_KEY=your_openai_api_key
 
 ---
 
-## 10. Fluxo de Dados Detalhado
+## 12. Fluxo de Dados Detalhado
 
 ```
 jogador digita: "!construa uma casa de pedra 10x10"
@@ -1335,7 +1459,7 @@ jogador digita: "!construa uma casa de pedra 10x10"
 
 ---
 
-## 11. Tratamento de Erros
+## 13. Tratamento de Erros
 
 ### 11.1 Reconexão Automática
 
@@ -1465,7 +1589,7 @@ function handleCorruptedSkill(filePath, error) {
 
 ---
 
-## 12. Dependências NPM
+## 14. Dependências NPM
 
 ```json
 {
@@ -1493,7 +1617,7 @@ function handleCorruptedSkill(filePath, error) {
 
 ---
 
-## 14. Gerenciamento de Custos
+## 15. Gerenciamento de Custos
 
 ### 14.1 Rastreamento de Uso
 
@@ -1616,7 +1740,7 @@ function checkCostAlerts(cost) {
 
 ---
 
-## 15. Dependências Nativas (Windows)
+## 16. Dependências Nativas (Windows)
 
 ### 15.1 better-sqlite3
 
@@ -1646,7 +1770,7 @@ npm rebuild isolated-vm
 
 ---
 
-## 16. Próximos Passos
+## 17. Próximos Passos
 
 Após aprovação deste design:
 
@@ -1663,7 +1787,7 @@ Após aprovação deste design:
 
 ---
 
-## 17. Resumo de Componentes
+## 18. Resumo de Componentes
 
 | Componente | Status | Prioridade |
 |------------|--------|------------|
@@ -1672,6 +1796,7 @@ Após aprovação deste design:
 | Memory Layer (Híbrido) | Definido | Alta |
 | Skills Layer | Definido | Alta |
 | LLM Layer (Multi-provider) | Definido | Alta |
+| Community Layer (Multi-Bot) | Definido | Alta |
 | Utils Layer | Definido | Média |
 | Gerenciamento de Custos | Definido | Média |
 | Dependências Nativas | Documentado | Baixa |
