@@ -647,6 +647,200 @@ Fatos são criados automaticamente quando:
 - Deduplicação: Verifica similaridade semântica antes de salvar
 - Fatos antigos (30+ dias sem acesso) são removidos automaticamente
 
+### 5.5 Skill Documentation Embedding
+
+**Problema:** Skills são salvas apenas com código, mas a busca semântica precisa de descrição textual para encontrar skills por significado.
+
+**Solução:** Gerar documentação descritiva e embeddings para cada skill aprendida.
+
+```javascript
+// memory/skillDocs.js
+
+class SkillDocumentation {
+  constructor(embeddings, database) {
+    this.embeddings = embeddings;
+    this.db = database;
+  }
+
+  // Gera documentação para skill aprendida
+  async generateDocumentation(skillCode, task, result) {
+    // Extrai informações da task e resultado
+    const doc = {
+      name: this.generateName(skillCode, task),
+      description: await this.generateDescription(skillCode, task, result),
+      parameters: this.extractParameters(skillCode),
+      returns: this.extractReturns(skillCode, result),
+      examples: this.generateExamples(task),
+      tags: this.extractTags(task, skillCode)
+    };
+
+    // Gera embedding da descrição
+    doc.embedding = await this.embeddings.vectorize(doc.description);
+
+    return doc;
+  }
+
+  // Gera nome descritivo para a skill
+  generateName(code, task) {
+    // Extrai verbo principal da task
+    const verbs = {
+      'construir': 'build',
+      'minerar': 'mine',
+      'coletar': 'collect',
+      'explorar': 'explore',
+      'craftar': 'craft',
+      'guardar': 'store'
+    };
+
+    const verb = task.intent?.toLowerCase() || 'task';
+    const object = task.action?.toLowerCase() || 'item';
+
+    const action = verbs[verb] || verb;
+    const timestamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+
+    return `${action}_${object}_${timestamp}`;
+  }
+
+  // Gera descrição semântica
+  async generateDescription(code, task, result) {
+    // Análise do código + task + resultado
+    const parts = [];
+
+    // O que a skill faz
+    parts.push(`Skill que ${task.intent || 'executa'} ${task.action || 'tarefa'}`);
+
+    // Parâmetros usados
+    if (task.material) parts.push(`usando ${task.material}`);
+    if (task.dimensions) parts.push(`com dimensões ${task.dimensions.width}x${task.dimensions.length}`);
+
+    // Condições
+    if (code.includes('findBlock')) parts.push('encontra blocos específicos');
+    if (code.includes('pathfinder')) parts.push('navega automaticamente');
+    if (code.includes('dig')) parts.push('minera blocos');
+    if (code.includes('craft')) parts.push('crafta itens');
+
+    // Resultado
+    if (result.success) {
+      parts.push(`com sucesso em ${result.duration}ms`);
+    }
+
+    return parts.join('. ') + '.';
+  }
+
+  // Extrai parâmetros do código
+  extractParameters(code) {
+    const params = [];
+    const paramMatch = code.match(/params\.(\w+)/g);
+
+    if (paramMatch) {
+      paramMatch.forEach(p => {
+        const name = p.replace('params.', '');
+        params.push({ name, type: 'any' });
+      });
+    }
+
+    return params;
+  }
+
+  // Extrai tipo de retorno
+  extractReturns(code, result) {
+    if (result.success) {
+      return {
+        type: 'object',
+        properties: Object.keys(result.data || {})
+      };
+    }
+    return { type: 'unknown' };
+  }
+
+  // Gera exemplos de uso
+  generateExamples(task) {
+    const examples = [];
+
+    // Exemplo baseado na task original
+    examples.push({
+      command: `!${task.intent} ${task.action || ''}`.trim(),
+      description: task.raw || ''
+    });
+
+    return examples;
+  }
+
+  // Extrai tags para busca
+  extractTags(task, code) {
+    const tags = new Set();
+
+    // Tags da task
+    if (task.intent) tags.add(task.intent.toLowerCase());
+    if (task.action) tags.add(task.action.toLowerCase());
+    if (task.material) tags.add(task.material.toLowerCase());
+
+    // Tags do código
+    if (code.includes('mine')) tags.add('mining');
+    if (code.includes('build')) tags.add('building');
+    if (code.includes('craft')) tags.add('crafting');
+    if (code.includes('collect')) tags.add('gathering');
+    if (code.includes('explore')) tags.add('exploration');
+
+    return Array.from(tags);
+  }
+
+  // Salva skill com documentação
+  async saveSkill(skillCode, task, result) {
+    const doc = await this.generateDocumentation(skillCode, task, result);
+
+    // Salva código em arquivo
+    const filename = `./skills/dynamic/${doc.name}.js`;
+    await fs.writeFile(filename, skillCode);
+
+    // Salva metadados no banco
+    await this.db.run(`
+      INSERT INTO skills_metadata (name, description, file_path, parameters, returns, examples, tags, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [doc.name, doc.description, filename, JSON.stringify(doc.parameters),
+        JSON.stringify(doc.returns), JSON.stringify(doc.examples),
+        JSON.stringify(doc.tags), Date.now()]);
+
+    // Salva embedding na tabela vetorial
+    await this.db.run(`
+      INSERT INTO skills_vss (rowid, embedding)
+      VALUES (?, ?)
+    `, [this.db.lastInsertRowId, JSON.stringify(doc.embedding)]);
+
+    logger.info(`[SkillDoc] Skill salva: ${doc.name}`);
+    return doc;
+  }
+
+  // Busca skill por descrição semântica
+  async findByDescription(query) {
+    const queryEmbedding = await this.embeddings.vectorize(query);
+
+    const results = await this.db.all(`
+      SELECT sm.name, sm.description, sm.file_path, sm.tags,
+             vec_distance_cosine(sv.embedding, ?) as distance
+      FROM skills_metadata sm
+      JOIN skills_vss sv ON sm.rowid = sv.rowid
+      ORDER BY distance ASC
+      LIMIT 5
+    `, [JSON.stringify(queryEmbedding)]);
+
+    return results;
+  }
+}
+```
+
+**Exemplo de uso:**
+
+```javascript
+// Após LLM gerar skill com sucesso
+const skillDoc = new SkillDocumentation(embeddings, db);
+await skillDoc.saveSkill(generatedCode, task, result);
+
+// Buscar skill similar depois
+const similar = await skillDoc.findByDescription("como faço uma casa de pedra?");
+// Retorna: [{ name: "build_house_20260317", description: "Skill que constrói casa...", distance: 0.12 }]
+```
+
 ---
 
 ## 6. Skills Layer
@@ -749,6 +943,138 @@ const COMPILATION_TIMEOUT = 5000;
 2. Análise de segurança → rejeita se detectar padrões maliciosos
 3. Compilação com timeout → rejeita se demorar mais de 5s
 4. Execução em sandbox → timeout de 30s
+
+### 6.3.2 Dynamic Turn Limits (Prevenção de Loop)
+
+**Problema:** Quando o LLM gera código com erro, ele pode entrar em loop infinito tentando corrigir, gastando tokens indefinidamente.
+
+**Solução:** Limite rígido de tentativas de correção com escalarção.
+
+```javascript
+// skills/turnLimiter.js
+
+class DynamicTurnLimiter {
+  constructor(config) {
+    this.maxAttempts = config?.maxAttempts || 3;        // Máximo de tentativas
+    this.currentAttempts = 0;
+    this.errorHistory = [];
+    this.escalationThreshold = config?.escalationThreshold || 2;
+  }
+
+  // Inicia nova geração de skill
+  startGeneration(task) {
+    this.currentAttempts = 0;
+    this.errorHistory = [];
+    this.task = task;
+  }
+
+  // Verifica se pode tentar novamente
+  canRetry(error) {
+    this.currentAttempts++;
+    this.errorHistory.push({
+      attempt: this.currentAttempts,
+      error: error.message,
+      timestamp: Date.now()
+    });
+
+    // Verifica se mesmo tipo de erro se repete
+    const sameErrorCount = this.errorHistory
+      .filter(e => e.error === error.message)
+      .length;
+
+    // Se mesmo erro 2+ vezes, provavelmente não vai resolver
+    if (sameErrorCount >= 2) {
+      logger.warn(`[TurnLimiter] Erro repetitivo detectado: ${error.message}`);
+      return false;
+    }
+
+    // Limite absoluto
+    if (this.currentAttempts >= this.maxAttempts) {
+      logger.warn(`[TurnLimiter] Limite de ${this.maxAttempts} tentativas atingido`);
+      return false;
+    }
+
+    return true;
+  }
+
+  // Gera contexto de erro para re-prompt
+  generateErrorContext() {
+    return {
+      task: this.task,
+      attempts: this.currentAttempts,
+      errors: this.errorHistory,
+      lastError: this.errorHistory[this.errorHistory.length - 1]
+    };
+  }
+
+  // Ação quando limite atingido
+  handleLimitReached() {
+    // 1. Notifica jogador
+    const errorMessage = this.errorHistory.length > 0
+      ? `Não consegui executar após ${this.currentAttempts} tentativas. Último erro: ${this.errorHistory[0].error}`
+      : `Não consegui executar após ${this.currentAttempts} tentativas.`;
+
+    // 2. Registra para aprendizado futuro
+    this.logFailure();
+
+    // 3. Retorna erro estruturado
+    return {
+      success: false,
+      reason: 'turn_limit_reached',
+      message: errorMessage,
+      attempts: this.currentAttempts,
+      shouldFallback: this.shouldUseFallback()
+    };
+  }
+
+  // Verifica se deve usar fallback (skill base similar)
+  shouldUseFallback() {
+    // Se tentou 2+ vezes, busca skill base similar
+    return this.currentAttempts >= this.escalationThreshold;
+  }
+
+  // Log para análise futura
+  logFailure() {
+    // Salva no banco para análise
+    // TODO: Implementar log estruturado
+    logger.error('[TurnLimiter] Falha registrada', {
+      task: this.task,
+      attempts: this.currentAttempts,
+      errors: this.errorHistory
+    });
+  }
+}
+```
+
+**Fluxo com Turn Limiter:**
+
+```
+Tentativa 1: LLM gera código → Executa → ERRO
+             ↓
+             TurnLimiter.canRetry() → true
+             ↓
+Tentativa 2: LLM re-genera com contexto do erro → Executa → ERRO
+             ↓
+             TurnLimiter.canRetry() → true (mesmo erro detectado)
+             ↓
+             TurnLimiter verifica: mesmo erro 2x → false
+             ↓
+             handleLimitReached() → Notifica jogador
+             ↓
+             Busca skill base similar como fallback
+```
+
+**Configuração:**
+
+```json
+{
+  "skills": {
+    "maxAttempts": 3,
+    "escalationThreshold": 2,
+    "logFailures": true
+  }
+}
+```
 
 ### 6.4 `registry.js` - Registro de Skills
 
@@ -1170,6 +1496,194 @@ src/
 **chatSystem:** Sistema conversacional em pt-BR, respostas concisas
 **codeSystem:** Geração de código JavaScript para Mineflayer
 **buildCodePrompt:** Template para gerar código com contexto do bot
+
+### 7.4 Semantic Snapshots (Redução de Contexto)
+
+**Problema:** Enviar todo o histórico de conversa para o LLM consome muitos tokens e custa caro.
+
+**Solução:** Semantic Snapshots transmitem apenas informações vitais do momento atual.
+
+```javascript
+// llm/snapshots.js
+
+class SemanticSnapshot {
+  constructor(bot, state, memory) {
+    this.bot = bot;
+    this.state = state;
+    this.memory = memory;
+  }
+
+  // Gera snapshot compacto do estado atual
+  generate() {
+    return {
+      // Posição e ambiente
+      position: this.bot.entity.position,
+      dimension: this.bot.game.dimension,
+      time: this.bot.time.day,
+
+      // Estado do bot
+      health: this.bot.health,
+      food: this.bot.food,
+      inventory: this.compactInventory(),
+
+      // Entidades próximas (apenas as relevantes)
+      nearbyEntities: this.getNearbyEntities(32),
+
+      // Blocos relevantes próximos
+      nearbyBlocks: this.getNearbyBlocks(16),
+
+      // Tarefa atual (se houver)
+      currentTask: this.state.currentTask?.type || null,
+
+      // Fatos relevantes do mundo (RAG)
+      relevantFacts: this.memory.getRelevantFacts(5),
+
+      // Timestamp
+      timestamp: Date.now()
+    };
+  }
+
+  // Compacta inventário para tokens mínimos
+  compactInventory() {
+    const items = this.bot.inventory.items();
+    const compacted = {};
+
+    for (const item of items) {
+      const name = item.name.replace('_', ' ');
+      compacted[name] = (compacted[name] || 0) + item.count;
+    }
+
+    // Retorna formato compacto: "stone:64, iron:32, wood:128"
+    return Object.entries(compacted)
+      .map(([name, count]) => `${name}:${count}`)
+      .join(', ');
+  }
+
+  // Entidades próximas (apenas relevantes)
+  getNearbyEntities(range) {
+    const entities = Object.values(this.bot.entities);
+    const relevant = ['player', 'zombie', 'skeleton', 'creeper', 'cow', 'pig', 'sheep', 'villager'];
+
+    return entities
+      .filter(e => e.position.distanceTo(this.bot.entity.position) < range)
+      .filter(e => relevant.some(r => e.name?.includes(r)))
+      .map(e => ({
+        type: e.name,
+        distance: Math.round(e.position.distanceTo(this.bot.entity.position)),
+        position: { x: Math.round(e.position.x), y: Math.round(e.position.y), z: Math.round(e.position.z) }
+      }))
+      .slice(0, 10); // Máximo 10 entidades
+  }
+
+  // Blocos relevantes próximos
+  getNearbyBlocks(range) {
+    const relevant = ['chest', 'furnace', 'crafting_table', 'furnace', 'ore', 'tree', 'water', 'lava'];
+    // Implementação busca blocos relevantes no range
+    return []; // Simplificado
+  }
+
+  // Formata para prompt
+  formatForPrompt() {
+    const snapshot = this.generate();
+
+    return `
+[ESTADO ATUAL]
+Posição: (${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z})
+Vida: ${snapshot.health}/20 | Fome: ${snapshot.food}/20
+Inventário: ${snapshot.inventory}
+Entidades próximas: ${snapshot.nearbyEntities.map(e => `${e.type}(${e.distance}m)`).join(', ') || 'nenhuma'}
+Tarefa atual: ${snapshot.currentTask || 'nenhuma'}
+Fatos relevantes: ${snapshot.relevantFacts.map(f => f.key).join(', ') || 'nenhum'}
+`.trim();
+  }
+}
+```
+
+**Benefícios:**
+- Reduz tokens de input em ~70%
+- Mantém apenas contexto relevante
+- Evita explosão de histórico
+
+### 7.5 Prompt Caching (Economia de Custos)
+
+**Problema:** O preâmbulo do sistema (regras do bot, métodos do Mineflayer, exemplos) é enviado em TODA chamada, desperdiçando tokens.
+
+**Solução:** Usar Prompt Caching para reutilizar o preâmbulo em chamadas subsequentes.
+
+```javascript
+// llm/promptCache.js
+
+class PromptCache {
+  constructor() {
+    this.cachedPreamble = null;
+    this.preambleHash = null;
+  }
+
+  // Gera hash do preâmbulo para verificar se mudou
+  hashPreamble(preamble) {
+    const crypto = require('crypto');
+    return crypto.createHash('md5').update(preamble).digest('hex');
+  }
+
+  // Prepara prompt com caching
+  preparePrompt(systemPrompt, userMessage, provider) {
+    // Google Gemini: usa cachedContent
+    if (provider === 'google') {
+      return this.prepareForGemini(systemPrompt, userMessage);
+    }
+
+    // OpenAI-compatible: usa contexto de sistema estático
+    if (provider === 'openai-compat') {
+      return this.prepareForOpenAI(systemPrompt, userMessage);
+    }
+  }
+
+  // Gemini: cachedContent
+  prepareForGemini(systemPrompt, userMessage) {
+    // Verifica se preâmbulo mudou
+    const currentHash = this.hashPreamble(systemPrompt);
+
+    if (currentHash === this.preambleHash && this.cachedPreamble) {
+      // Reutiliza cache - 90% mais barato
+      return {
+        cachedContent: this.cachedPreamble,
+        contents: [{ role: 'user', parts: [{ text: userMessage }] }]
+      };
+    }
+
+    // Novo preâmbulo - cria cache
+    this.preambleHash = currentHash;
+    this.cachedPreamble = {
+      role: 'user',
+      parts: [{ text: systemPrompt }]
+    };
+
+    return {
+      contents: [
+        { role: 'user', parts: [{ text: systemPrompt }] },
+        { role: 'model', parts: [{ text: 'Entendido. Estou pronto para ajudar.' }] },
+        { role: 'user', parts: [{ text: userMessage }] }
+      ]
+    };
+  }
+
+  // OpenAI: separa sistema de usuário
+  prepareForOpenAI(systemPrompt, userMessage) {
+    // OpenAI automaticamente cacheia system prompts repetidos
+    return {
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userMessage }
+      ]
+    };
+  }
+}
+```
+
+**Benefícios:**
+- **Gemini:** Até 90% de desconto em chamadas subsequentes
+- **OpenAI:** Cache automático de system prompts
+- **NVIDIA/OpenRouter:** Suporte varia por provider
 
 ---
 
@@ -1794,8 +2308,12 @@ Após aprovação deste design:
 | Core Layer | Definido | Alta |
 | Autonomy Layer (Voyager) | Definido | Alta |
 | Memory Layer (Híbrido) | Definido | Alta |
+| Skill Documentation Embedding | Definido | Alta |
 | Skills Layer | Definido | Alta |
+| Dynamic Turn Limits | Definido | Alta |
 | LLM Layer (Multi-provider) | Definido | Alta |
+| Semantic Snapshots | Definido | Alta |
+| Prompt Caching | Definido | Média |
 | Community Layer (Multi-Bot) | Definido | Alta |
 | Utils Layer | Definido | Média |
 | Gerenciamento de Custos | Definido | Média |
