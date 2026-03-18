@@ -153,7 +153,7 @@ async shutdown(signal) {
 }
 ```
 
-### 2.2 Estrutura de Arquivos
+### 2.3 Estrutura de Arquivos
 
 ```
 src/
