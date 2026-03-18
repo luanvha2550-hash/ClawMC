@@ -56,10 +56,101 @@ Este design cobre:
 │           └────────────────────┼────────────────────┘           │
 │                                ▼                                │
 │                    ┌─────────────────┐                          │
+│                    │  STATE MACHINE  │                          │
+│                    │  (Operation Lock)│                         │
+│                    └─────────────────┘                          │
+│                                ▼                                │
+│                    ┌─────────────────┐                          │
 │                    │   STATUS FILE   │                          │
 │                    │  (JSON export)  │                          │
 │                    └─────────────────┘                          │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 State Machine e Concurrency
+
+**Problema:** Múltiplas operações podem conflitar (shutdown durante checkpoint, death recovery durante task execution).
+
+**Solução:** State machine com locking para operações críticas.
+
+```javascript
+// robustness/stateMachine.js
+
+class OperationStateMachine {
+  constructor() {
+    this.state = 'idle'; // 'idle', 'checkpointing', 'recovering', 'shutting_down'
+    this.currentOperation = null;
+    this.lockPromise = null;
+  }
+
+  // Tenta adquirir lock para operação
+  async acquire(operation) {
+    if (this.state === 'shutting_down') {
+      throw new Error('Bot está desligando');
+    }
+
+    if (this.state !== 'idle') {
+      // Aguarda operação atual terminar
+      await this.lockPromise;
+    }
+
+    this.state = operation;
+    this.currentOperation = operation;
+    let resolveLock;
+    this.lockPromise = new Promise(resolve => { resolveLock = resolve; });
+    this.resolveLock = resolveLock;
+
+    return () => this.release();
+  }
+
+  // Libera lock
+  release() {
+    this.state = 'idle';
+    this.currentOperation = null;
+    this.resolveLock?.();
+    this.lockPromise = null;
+  }
+
+  // Verifica se pode executar
+  canExecute(operation) {
+    if (this.state === 'shutting_down') return false;
+    return this.state === 'idle';
+  }
+
+  // Força entrada em modo shutdown
+  async forceShutdown() {
+    this.state = 'shutting_down';
+    // Aguarda operação atual se houver
+    if (this.lockPromise) {
+      await this.lockPromise;
+    }
+  }
+}
+```
+
+**Prioridade de Operações:**
+1. `shutting_down` - Mais alta, bloqueia tudo
+2. `recovering` - Média, para death recovery
+3. `checkpointing` - Baixa, pode ser interrompida
+
+**Uso:**
+
+```javascript
+// No checkpoint
+async save(type) {
+  const release = await this.stateMachine.acquire('checkpointing');
+  try {
+    // ... salva checkpoint
+  } finally {
+    release();
+  }
+}
+
+// No shutdown
+async shutdown(signal) {
+  await this.stateMachine.forceShutdown();
+  // ... continua shutdown
+}
 ```
 
 ### 2.2 Estrutura de Arquivos
@@ -113,6 +204,51 @@ src/
 | | dbSizeMB | Tamanho |
 | **Histórico** | responseTimeHistory | Últimos 100 |
 | | taskDurationHistory | Últimas 50 |
+
+**Bounded Queue Implementation:**
+
+```javascript
+class MetricsCollector {
+  constructor(config) {
+    this.maxResponseTimeHistory = config?.maxResponseTimeHistory || 100;
+    this.maxTaskDurationHistory = config?.maxTaskDurationHistory || 50;
+
+    this.metrics = {
+      // ... contadores e gauges
+      responseTimeHistory: [],
+      taskDurationHistory: []
+    };
+  }
+
+  recordResponseTime(durationMs) {
+    this.metrics.responseTimeHistory.push({
+      timestamp: Date.now(),
+      duration: durationMs
+    });
+
+    // BOUNDED: Remove mais antigo se exceder limite
+    if (this.metrics.responseTimeHistory.length > this.maxResponseTimeHistory) {
+      this.metrics.responseTimeHistory.shift();
+    }
+
+    this.metrics.lastLlmCall = Date.now();
+  }
+
+  recordTaskDuration(taskType, durationMs, success) {
+    this.metrics.taskDurationHistory.push({
+      task: taskType,
+      duration: durationMs,
+      success: success,
+      timestamp: Date.now()
+    });
+
+    // BOUNDED: Remove mais antigo se exceder limite
+    if (this.metrics.taskDurationHistory.length > this.maxTaskDurationHistory) {
+      this.metrics.taskDurationHistory.shift();
+    }
+  }
+}
+```
 
 **API:**
 
@@ -218,6 +354,96 @@ eventLog.logMemoryWarning(usagePercent, action);
 | `skillHighFailureRate` | skillSuccessRate < 70% | warning |
 | `taskStuck` | task sem progresso > 30min | warning |
 | `dbSizeLarge` | dbSizeMB > 100 | info |
+
+**Hysteresis e Cooldown:**
+
+Para evitar oscilação de alertas (ex: memória oscilando entre 84% e 86%), cada alerta tem:
+- **Hysteresis:** Só dispara após N verificações consecutivas acima do threshold
+- **Cooldown:** Só resolve após M verificações consecutivas abaixo do threshold
+
+```javascript
+class AlertSystem {
+  constructor(config, metrics, eventLog) {
+    this.config = {
+      // Configuração de hysteresis
+      hysteresis: {
+        memoryHigh: { raiseAfter: 3, resolveAfter: 2 }, // 3 checks acima, 2 abaixo
+        memoryCritical: { raiseAfter: 2, resolveAfter: 1 },
+        llmHighErrorRate: { raiseAfter: 2, resolveAfter: 2 },
+        // ... outros
+      },
+      // Cooldown entre alertas do mesmo tipo
+      cooldown: {
+        memoryHigh: 60000,    // 1 minuto
+        memoryCritical: 30000,
+        llmDown: 300000,      // 5 minutos
+        taskStuck: 300000
+      }
+    };
+
+    this.alertState = new Map(); // { name: { consecutiveChecks, lastRaised } }
+  }
+
+  check() {
+    const newAlerts = [];
+
+    for (const [name, condition] of Object.entries(this.conditions)) {
+      const isTriggered = condition.check();
+      const state = this.alertState.get(name) || {
+        consecutiveChecks: 0,
+        lastRaised: 0,
+        isActive: false
+      };
+
+      if (isTriggered) {
+        state.consecutiveChecks++;
+
+        // Só levanta se passou hysteresis E não está em cooldown
+        const hysteresis = this.config.hysteresis[name] || { raiseAfter: 1, resolveAfter: 1 };
+        const cooldown = this.config.cooldown[name] || 0;
+        const now = Date.now();
+
+        if (state.consecutiveChecks >= hysteresis.raiseAfter
+            && !state.isActive
+            && (now - state.lastRaised > cooldown)) {
+
+          const alert = {
+            name,
+            message: condition.message,
+            severity: condition.severity,
+            timestamp: new Date().toISOString()
+          };
+
+          newAlerts.push(alert);
+          this.activeAlerts.push(alert);
+          state.isActive = true;
+          state.lastRaised = now;
+
+          this.eventLog.log(condition.severity.toUpperCase(), 'ALERT', 'raised', alert);
+        }
+      } else {
+        state.consecutiveChecks = 0;
+
+        // Só resolve se passou hysteresis de resolução
+        const hysteresis = this.config.hysteresis[name] || { raiseAfter: 1, resolveAfter: 1 };
+
+        if (state.isActive) {
+          state.resolveCount = (state.resolveCount || 0) + 1;
+
+          if (state.resolveCount >= hysteresis.resolveAfter) {
+            this.resolveAlert(name);
+            state.resolveCount = 0;
+          }
+        }
+      }
+
+      this.alertState.set(name, state);
+    }
+
+    return newAlerts;
+  }
+}
+```
 
 **API:**
 
@@ -342,7 +568,41 @@ if (shutdown.isInProgress()) {
     { name: 'diamond_pickaxe', count: 1 },
     { name: 'iron_ingot', count: 32 }
   ],
-  dimension: 'overworld'
+  dimension: 'overworld',
+  recoveryAttempts: 0  // Contador de tentativas de recuperação
+}
+```
+
+**Controle de Tentativas:**
+
+```javascript
+class DeathRecovery {
+  constructor(config) {
+    this.maxDeathAttempts = config?.maxDeathAttempts || 3;
+    this.currentAttempts = 0;  // Contador de tentativas para morte ATUAL
+    this.deathHistory = [];
+  }
+
+  // Incrementa tentativa
+  incrementAttempt() {
+    this.currentAttempts++;
+    return this.currentAttempts < this.maxDeathAttempts;
+  }
+
+  // Reseta contador (após sucesso ou mudança de contexto)
+  resetAttempts() {
+    this.currentAttempts = 0;
+  }
+
+  // Verifica se pode tentar novamente
+  canRetry() {
+    return this.currentAttempts < this.maxDeathAttempts;
+  }
+
+  // Obtém contador atual
+  getAttempts() {
+    return this.currentAttempts;
+  }
 }
 ```
 
@@ -356,6 +616,7 @@ Bot morre
 │ handleDeath()               │
 │ - Salva posição, causa      │
 │ - Salva inventário          │
+│ - recoveryAttempts = 0      │
 │ - Log CRITICAL              │
 │ - Salva no banco           │
 └─────────────────────────────┘
@@ -364,12 +625,16 @@ Bot morre
 ┌─────────────────────────────┐
 │ handleRespawn()             │
 │ - Aguarda cooldown (30s)    │
+│ - recoveryAttempts++        │
 │ - Agenda tarefa de recuperação│
 └─────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────┐
 │ attemptRecovery()           │
+│ - Verifica canRetry()       │
+│ - Se recoveryAttempts > max:│
+│   → Abandona recuperação    │
 │ - Adiciona meta urgente     │
 │ - recover_body com posição  │
 └─────────────────────────────┘
@@ -377,6 +642,13 @@ Bot morre
     ▼
  Bot executa recuperação ou
  falha após maxAttempts
+    │
+    ▼
+┌─────────────────────────────┐
+│ markRecovered()             │
+│ - recoveryAttempts = 0      │
+│ - Registra sucesso          │
+└─────────────────────────────┘
 ```
 
 **API:**
@@ -393,6 +665,17 @@ deathRecovery.updateLastInventory();
 
 // Marca recuperação como completa
 await deathRecovery.markRecovered();
+
+// Obtém contador de tentativas
+const attempts = deathRecovery.getAttempts();
+
+// Verifica se pode tentar novamente
+if (deathRecovery.canRetry()) {
+  // Tenta recuperar
+}
+
+// Reseta contador
+deathRecovery.resetAttempts();
 
 // Obtém histórico de mortes
 const deaths = deathRecovery.getRecentDeaths(5);
@@ -422,11 +705,13 @@ const deaths = deathRecovery.getRecentDeaths(5);
 
 **Condições de Detecção:**
 
-| Condição | Threshold | Ação |
-|----------|-----------|------|
-| Posição inalterada | 3 verificações (15s) | handleStuck |
-| Pathfinding falha | noPath | Incrementa contador |
-| Tempo sem movimento | > 2 minutos | handleStuck |
+| Condição | Threshold | Ação | Descrição |
+|----------|-----------|------|-----------|
+| Posição inalterada | 3 verificações (15s) | handleStuck | Bot não moveu durante tarefa ativa |
+| Pathfinding falha | noPath event | Incrementa contador | Pathfinder não encontrou caminho |
+| Task timeout | > 30 min | handleStuck | Tarefa demorou mais que o esperado |
+
+> **Nota:** A condição "Posição inalterada" é o método PRIMÁRIO de detecção. "Task timeout" é um mecanismo de BACKUP caso a detecção de posição falhe. Eles NÃO são simultâneos - o primeiro que disparar aciona handleStuck.
 
 **Fluxo de Detecção:**
 
@@ -439,6 +724,8 @@ const deaths = deathRecovery.getRecentDeaths(5);
 └─────────────────────────────┘
     │
     ▼ (stuckCount >= 3)
+    │         OU
+    ▼ (taskTimeout > 30min)
 ┌─────────────────────────────┐
 │ handleStuck()               │
 │ - Loga WARN                 │
@@ -563,6 +850,68 @@ bot.on('spawn', async () => {
 });
 ```
 
+**Tratamento de Erros SQLite:**
+
+```javascript
+class CheckpointManager {
+  // ... métodos anteriores
+
+  async save(type = 'auto') {
+    try {
+      const checkpoint = { /* ... dados ... */ };
+
+      // Tenta salvar no banco
+      await this.db.run(`
+        INSERT INTO checkpoints (timestamp, type, data, task_type, task_progress)
+        VALUES (?, ?, ?, ?, ?)
+      `, [/* ... */]);
+
+      this.lastCheckpoint = checkpoint;
+      return checkpoint;
+
+    } catch (dbError) {
+      // Log do erro
+      this.eventLog?.error('CHECKPOINT', 'db_error', {
+        error: dbError.message,
+        type
+      });
+
+      // Fallback: salva em memória
+      this.inMemoryBackup = checkpoint;
+
+      // Verifica integridade do banco
+      await this.verifyDatabaseIntegrity();
+
+      return null;
+    }
+  }
+
+  async verifyDatabaseIntegrity() {
+    try {
+      await this.db.run('PRAGMA integrity_check');
+    } catch (e) {
+      // Banco corrompido - tenta reconectar
+      this.eventLog?.critical('DATABASE', 'integrity_failed', {
+        error: e.message
+      });
+      await this.reconnectDatabase();
+    }
+  }
+
+  async reconnectDatabase() {
+    try {
+      await this.db.close();
+      this.db = await initDatabase(this.config.dbPath);
+      this.eventLog?.info('DATABASE', 'reconnected');
+    } catch (e) {
+      this.eventLog?.critical('DATABASE', 'reconnect_failed', {
+        error: e.message
+      });
+    }
+  }
+}
+```
+
 ---
 
 ## 4. Integração
@@ -644,12 +993,26 @@ class RobustnessLayer {
   }
 
   getHealth() {
+    const metrics = this.metrics.getStats();
     return {
       status: this.alerts.getActiveAlerts().length === 0 ? 'healthy' : 'degraded',
       uptime: process.uptime(),
-      memory: { ... },
-      llm: { ... },
-      skills: { ... },
+      memory: {
+        heapUsedMB: this.metrics.metrics.heapUsedMB,
+        heapTotalMB: this.metrics.metrics.heapTotalMB,
+        heapUsagePercent: this.metrics.metrics.heapUsagePercent,
+        isDegraded: this.metrics.metrics.heapUsagePercent > 91
+      },
+      llm: {
+        calls: this.metrics.metrics.llmCalls,
+        errors: this.metrics.metrics.llmErrors,
+        avgResponseTimeMs: metrics.avgResponseTimeMs,
+        errorRate: metrics.llmErrorRate
+      },
+      skills: {
+        executions: this.metrics.metrics.skillExecutions,
+        successRate: metrics.skillSuccessRate
+      },
       stuck: this.stuckDetector.export(),
       death: this.deathRecovery.export(),
       checkpoint: this.checkpoint.export(),
@@ -657,9 +1020,49 @@ class RobustnessLayer {
     };
   }
 
+  // Restaura estado de checkpoint
+  async restoreFromCheckpoint() {
+    try {
+      const restored = await this.checkpoint.restore();
+
+      if (restored) {
+        this.eventLog.info('CHECKPOINT', 'restored', {
+          timestamp: this.checkpoint.lastCheckpoint?.timestamp
+        });
+      }
+
+      return restored;
+    } catch (error) {
+      this.eventLog.error('CHECKPOINT', 'restore_failed', {
+        error: error.message
+      });
+      return false;
+    }
+  }
+
   async exportStatus(health = null) {
     const status = health || this.getHealth();
-    await fs.writeFile('./logs/status.json', JSON.stringify(status, null, 2));
+
+    // ATOMIC WRITE: escreve em arquivo temporário, depois renomeia
+    // Evita leitura de JSON parcial/corrompido
+    const tempPath = './logs/status.json.tmp';
+    const finalPath = './logs/status.json';
+
+    try {
+      await fs.writeFile(tempPath, JSON.stringify(status, null, 2));
+      await fs.rename(tempPath, finalPath);
+    } catch (error) {
+      this.eventLog.error('STATUS', 'export_failed', {
+        error: error.message
+      });
+
+      // Remove arquivo temporário se existir
+      try {
+        await fs.unlink(tempPath);
+      } catch (e) {
+        // Ignora
+      }
+    }
   }
 }
 
