@@ -166,19 +166,24 @@ ClawMC/
 │   │
 │   ├── core/
 │   │   ├── bot.js               # Conexão Mineflayer, eventos
+│   │   ├── circadianEvents.js   # Eventos de ciclo dia/noite
 │   │   ├── ooda.js              # Loop OODA principal
 │   │   ├── commands.js          # Parser de comandos (prefixo)
 │   │   ├── state.js             # Estado do bot (tarefa atual, timeout)
+│   │   ├── persistence.js       # Persistência de estado entre sessões
 │   │   ├── curriculum.js        # Gerenciador de currículo (Voyager)
 │   │   ├── idle.js              # Loop de autonomia
 │   │   ├── scheduler.js         # Tarefas agendadas (cron)
 │   │   └── survival.js          # Monitor de sobrevivência
 │   │
 │   ├── memory/
+│   │   ├── database.js          # Inicialização SQLite
 │   │   ├── embeddings.js        # Sistema híbrido (local + API)
+│   │   ├── memoryManager.js     # Graceful degradation de memória
+│   │   ├── hybridSearch.js      # Busca híbrida (semântica + SQL)
 │   │   ├── rag.js               # Consultas sqlite-vec
 │   │   ├── facts.js             # CRUD de fatos do mundo
-│   │   └── database.js          # Inicialização SQLite
+│   │   └── skillDocs.js         # Documentação de skills
 │   │
 │   ├── skills/
 │   │   ├── base/                 # Skills pré-definidas
@@ -200,7 +205,9 @@ ClawMC/
 │   │   ├── dynamic/               # Skills aprendidas (geradas)
 │   │   │   └── .gitkeep
 │   │   ├── executor.js           # Sandbox de execução
-│   │   └── registry.js           # Registro de todas skills
+│   │   ├── registry.js           # Registro de todas skills
+│   │   ├── turnLimiter.js        # Limite de tentativas
+│   │   └── testFirst.js          # Testes simulados antes de executar
 │   │
 │   ├── llm/
 │   │   ├── providers/
@@ -209,11 +216,23 @@ ClawMC/
 │   │   │   ├── factory.js        # Factory de providers
 │   │   │   └── index.js          # Lista de providers
 │   │   ├── router.js             # Roteamento + fallback
-│   │   └── prompts.js            # Templates de prompt
+│   │   ├── modelSelector.js      # Seleção de modelo por complexidade
+│   │   ├── circuitBreaker.js     # Circuit breaker para APIs
+│   │   ├── prompts.js            # Templates de prompt
+│   │   ├── snapshots.js          # Semantic Snapshots
+│   │   ├── promptCache.js        # Cache de prompts
+│   │   └── minifiedDocs.js       # Documentação compacta da API
+│   │
+│   ├── community/                 # Multi-bot cooperation (opcional)
+│   │   ├── manager.js            # Gerenciador de peers
+│   │   ├── protocol.js           # Protocolo de comunicação
+│   │   ├── roles.js              # Sistema de papéis
+│   │   └── goals.js              # Objetivos comunitários
 │   │
 │   └── utils/
 │       ├── logger.js             # Sistema de logs
 │       ├── config.js             # Carregador de config.json
+│       ├── healthCheck.js        # Verificação de integridade
 │       └── helpers.js             # Funções utilitárias
 │
 ├── data/
@@ -245,6 +264,117 @@ ClawMC/
 - `'spawn'`: bot entrou no mundo → state.reset()
 - `'death'`: bot morreu → state.handleDeath()
 - `'kicked'`: bot foi expulso → reconexão com backoff
+- `'time'': ciclo dia/noite → autonomia.onTimeChange()
+- `'weather'': mudança de clima → autonomia.onWeatherChange()
+- `'entityGone'`: entidade saiu de alcance → state.forgetEntity()
+- `'entityHurt'': entidade ferida → autonomia.onEntityHurt()
+
+**Eventos do Ciclo Circadiano (Dia/Noite):**
+
+```javascript
+// core/circadianEvents.js
+
+class CircadianEvents {
+  constructor(bot, state) {
+    this.bot = bot;
+    this.state = state;
+    this.lastDayTime = null;
+
+    // Eventos baseados no tempo do jogo
+    this.bot.on('time', () => this.checkTimeEvents());
+  }
+
+  checkTimeEvents() {
+    const dayTime = this.bot.time.timeOfDay;
+    const isDay = dayTime < 12000;  // 0-12000 = dia, 12000-24000 = noite
+
+    // Transição dia → noite
+    if (this.lastDayTime !== null && this.lastDayTime < 12000 && dayTime >= 12000) {
+      this.onNightfall();
+    }
+
+    // Transição noite → dia
+    if (this.lastDayTime !== null && this.lastDayTime >= 12000 && dayTime < 12000) {
+      this.onDaybreak();
+    }
+
+    // Amehecer (começo do dia)
+    if (this.lastDayTime !== null && this.lastDayTime > 22000 && dayTime < 1000) {
+      this.onSunrise();
+    }
+
+    // Entardecer (final do dia)
+    if (this.lastDayTime !== null && this.lastDayTime < 11000 && dayTime >= 11000) {
+      this.onSunset();
+    }
+
+    this.lastDayTime = dayTime;
+  }
+
+  // Anoitecer - mobs hostis começam a spawnar
+  onNightfall() {
+    logger.info('[Circadian] Anoitecer - iniciando protocolo de segurança');
+    this.emit('nightfall', {
+      message: 'Está anoitecendo. Mobs hostis podem aparecer.',
+      priority: 'high',
+      suggestedActions: [
+        'build_shelter',   // Construir abrigo se não tiver
+        'go_home',         // Voltar para base
+        'light_area'       // Iluminar área
+      ]
+    });
+  }
+
+  // Amanhecer - mobs hostis queimam
+  onDaybreak() {
+    logger.info('[Circadian] Amanhecer - área segura novamente');
+    this.emit('daybreak', {
+      message: 'Está amanhecendo. Mobs hostis vão queimar.',
+      priority: 'low',
+      suggestedActions: [
+        'resume_tasks',    // Continuar tarefas interrompidas
+        'collect_items'    // Coletar drops de mobs que queimaram
+      ]
+    });
+  }
+
+  // Nascer do sol
+  onSunrise() {
+    this.emit('sunrise', { priority: 'none' });
+  }
+
+  // Pôr do sol
+  onSunset() {
+    logger.info('[Circadian] Entardecer - preparando para noite');
+    this.emit('sunset', {
+      priority: 'medium',
+      suggestedActions: [
+        'check_shelter',   // Verificar abrigo
+        'gather_torch'     // Preparar tochas
+      ]
+    });
+  }
+
+  // Emite evento para o sistema de autonomia
+  emit(event, data) {
+    this.bot.emit('circadian', { event, ...data });
+  }
+}
+
+// Integração com Autonomy Layer
+autonomy.on('circadian', ({ event, suggestedActions }) => {
+  if (event === 'nightfall' && !state.hasShelter()) {
+    // Prioridade máxima: construir abrigo
+    curriculum.addUrgentGoal('build_shelter');
+  }
+});
+```
+
+**Casos de Uso do Ciclo Circadiano:**
+1. **Sobrevivência:** Bot dorme à noite em cama próxima
+2. **Coleta:** Bot coleta drops de mobs ao amanhecer
+3. **Exploração:** Evita áreas não iluminadas à noite
+4. **Farming:** Planta durante o dia, colhe ao amanhecer
 
 **Configuração de conexão:**
 ```json
@@ -330,6 +460,140 @@ async function process(chatMessage, username) {
 - `isBusy()` → verifica se ocupado
 - `checkTimeout()` → auto-cancela se expirado
 
+### 4.5 `persistence.js` - Persistência de Estado
+
+**Problema:** Quando o bot desconecta ou o servidor reinicia, todo o progresso é perdido (tarefa atual, objetivos, fatos aprendidos).
+
+**Solução:** Salvar estado periodicamente e restaurar ao reconectar.
+
+```javascript
+// core/persistence.js
+
+class StatePersistence {
+  constructor(db, state) {
+    this.db = db;
+    this.state = state;
+    this.saveInterval = 60000; // Salva a cada 1 minuto
+    this.lastSave = null;
+  }
+
+  // Inicializa persistência
+  async init() {
+    // Cria tabela de estado
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS bot_state (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at DATETIME
+      )
+    `);
+
+    // Restaura estado anterior
+    await this.restore();
+
+    // Inicia salvamento periódico
+    this.startAutoSave();
+  }
+
+  // Salva estado atual
+  async save() {
+    const stateData = {
+      currentTask: this.state.currentTask,
+      position: this.state.bot?.entity?.position,
+      inventory: this.state.getInventory(),
+      following: this.state.following,
+      curriculumPhase: this.state.curriculumPhase,
+      lastLocation: this.state.lastLocation
+    };
+
+    // Salva cada campo
+    for (const [key, value] of Object.entries(stateData)) {
+      await this.db.run(`
+        INSERT OR REPLACE INTO bot_state (key, value, updated_at)
+        VALUES (?, ?, ?)
+      `, [key, JSON.stringify(value), new Date().toISOString()]);
+    }
+
+    this.lastSave = Date.now();
+    logger.debug('[Persistence] Estado salvo');
+  }
+
+  // Restaura estado salvo
+  async restore() {
+    const rows = await this.db.all('SELECT key, value FROM bot_state');
+
+    if (rows.length === 0) {
+      logger.info('[Persistence] Nenhum estado anterior encontrado');
+      return;
+    }
+
+    const savedState = {};
+    for (const row of rows) {
+      savedState[row.key] = JSON.parse(row.value);
+    }
+
+    // Restaura estado
+    if (savedState.currentTask) {
+      logger.info(`[Persistence] Restaurando tarefa: ${savedState.currentTask.type}`);
+      this.state.pendingTask = savedState.currentTask;
+    }
+
+    if (savedState.curriculumPhase) {
+      this.state.curriculumPhase = savedState.curriculumPhase;
+    }
+
+    if (savedState.lastLocation) {
+      this.state.lastLocation = savedState.lastLocation;
+    }
+
+    logger.info('[Persistence] Estado restaurado');
+  }
+
+  // Salvamento automático
+  startAutoSave() {
+    this.autoSaveTimer = setInterval(() => {
+      this.save().catch(err => {
+        logger.error('[Persistence] Erro ao salvar:', err);
+      });
+    }, this.saveInterval);
+  }
+
+  // Para salvamento automático
+  stopAutoSave() {
+    if (this.autoSaveTimer) {
+      clearInterval(this.autoSaveTimer);
+    }
+  }
+
+  // Limpa estado (para logout/reset)
+  async clear() {
+    await this.db.run('DELETE FROM bot_state');
+    logger.info('[Persistence] Estado limpo');
+  }
+}
+```
+
+**Eventos de Salvamento:**
+- **Periódico:** A cada 1 minuto
+- **Tarefa iniciada:** `setTask()` → `save()`
+- **Tarefa concluída:** `clearTask()` → `save()`
+- **Desconexão:** `bot.on('end')` → `save()`
+
+**Restauração:**
+```javascript
+// No bot.js, após conectar
+bot.on('spawn', async () => {
+  await persistence.restore();
+
+  // Se tinha tarefa pendente, retoma
+  if (state.pendingTask) {
+    logger.info(`Retomando tarefa: ${state.pendingTask.type}`);
+    // Aguarda 5 segundos para estabilizar
+    setTimeout(() => autonomy.resumeTask(state.pendingTask), 5000);
+  }
+});
+```
+
 ---
 
 ## 5. Memory Layer
@@ -339,29 +603,39 @@ async function process(chatMessage, username) {
 **Tabelas:**
 
 ```sql
--- Skills aprendidas (código gerado) - sqlite-vec armazena apenas vetores
-CREATE VIRTUAL TABLE skills_vss USING vec0(
+-- Skills aprendidas - Embeddings LOCAIS (384 dimensões)
+-- multilingual-e5-small, paraphrase-multilingual-MiniLM-L12
+CREATE VIRTUAL TABLE skills_vss_local USING vec0(
   embedding FLOAT[384]
 );
 
--- Metadados das skills (linkado via rowid)
+-- Skills aprendidas - Embeddings API (768 dimensões)
+-- Gemini Embedding, NVIDIA NV-Embed
+CREATE VIRTUAL TABLE skills_vss_api USING vec0(
+  embedding FLOAT[768]
+);
+
+-- Metadados das skills (comum para ambas tabelas)
 CREATE TABLE skills_metadata (
   id INTEGER PRIMARY KEY,
-  rowid INTEGER,        -- link para skills_vss
   name TEXT UNIQUE,
   description TEXT,
   file_path TEXT,
-  created_at DATETIME,
-  FOREIGN KEY (rowid) REFERENCES skills_vss(rowid)
+  embedding_source TEXT,  -- 'local' ou 'api'
+  created_at DATETIME
 );
 
 -- Fatos do mundo (coordenadas, regras, localizações)
+-- Usa embeddings locais (mais comum, sem custo)
+CREATE VIRTUAL TABLE facts_vss USING vec0(
+  embedding FLOAT[384]
+);
+
 CREATE TABLE facts (
   id INTEGER PRIMARY KEY,
   type TEXT,           -- 'location', 'rule', 'chest', 'player'
   key TEXT,
   value TEXT,          -- JSON
-  embedding BLOB,
   created_at DATETIME,
   updated_at DATETIME
 );
@@ -375,7 +649,41 @@ CREATE TABLE executions (
   duration_ms INTEGER,
   timestamp DATETIME
 );
+
+-- Community Layer - Peers conhecidos
+CREATE TABLE community_peers (
+  id INTEGER PRIMARY KEY,
+  name TEXT UNIQUE,
+  owner TEXT,
+  role TEXT,
+  capabilities TEXT,     -- JSON array de skills
+  position TEXT,         -- JSON {x, y, z}
+  last_seen DATETIME
+);
+
+-- Community Layer - Fatos compartilhados
+CREATE TABLE shared_facts (
+  id INTEGER PRIMARY KEY,
+  key TEXT UNIQUE,
+  value TEXT,
+  source_peer TEXT,
+  created_at DATETIME
+);
+
+-- API Keys validadas (sem armazenar as chaves reais)
+CREATE TABLE api_key_status (
+  id INTEGER PRIMARY KEY,
+  provider TEXT UNIQUE,
+  is_valid BOOLEAN,
+  last_check DATETIME,
+  error_message TEXT
+);
 ```
+
+**Nota sobre Dimensões:**
+- Local embeddings (multilingual-e5-small): 384 dimensões
+- API embeddings (Gemini, NVIDIA): 768 dimensões
+- O sistema escolhe a tabela correta baseado no `embedding_source` do metadata
 
 ### 5.2 `embeddings.js` - Sistema Híbrido (Local + API)
 
@@ -611,6 +919,136 @@ export default EmbeddingsManager;
 - ❌ Dados enviados à API
 - ❌ Limite de free tier
 
+#### 5.2.5 Graceful Degradation (Gerenciamento de Memória)
+
+**Problema:** O hardware tem apenas 8GB RAM e o cliente do Minecraft consome parte significativa. Quando a RAM está alta (>91%), o sistema pode ficar instável.
+
+**Solução:** Degradar automaticamente recursos para manter o bot funcional.
+
+```javascript
+// memory/memoryManager.js
+
+class MemoryManager {
+  constructor(embeddings, config) {
+    this.embeddings = embeddings;
+    this.config = config;
+    this.threshold = config.memoryThreshold || 0.91; // 91%
+    this.checkInterval = 30000; // 30 segundos
+    this.isDegraded = false;
+  }
+
+  // Inicia monitoramento
+  start() {
+    this.monitorTimer = setInterval(() => {
+      this.checkAndDegrade();
+    }, this.checkInterval);
+  }
+
+  // Para monitoramento
+  stop() {
+    if (this.monitorTimer) {
+      clearInterval(this.monitorTimer);
+    }
+  }
+
+  // Verifica uso de memória e degrada se necessário
+  checkAndDegrade() {
+    const usage = process.memoryUsage();
+    const heapUsage = usage.heapUsed / usage.heapTotal;
+
+    logger.debug(`[MemoryManager] Heap: ${Math.round(heapUsage * 100)}%`);
+
+    if (heapUsage > this.threshold && !this.isDegraded) {
+      logger.warn(`[MemoryManager] Memória alta (${Math.round(heapUsage * 100)}%), iniciando degradação`);
+      this.degrade();
+    } else if (heapUsage < (this.threshold - 0.1) && this.isDegraded) {
+      logger.info('[MemoryManager] Memória normalizada, restaurando recursos');
+      this.restore();
+    }
+  }
+
+  // Degrada recursos para liberar memória
+  async degrade() {
+    this.isDegraded = true;
+
+    // 1. Descarrega modelo de embeddings
+    if (this.embeddings.localModel) {
+      logger.info('[MemoryManager] Descarregando modelo de embeddings');
+      this.embeddings.localModel = null;
+      this.embeddings.mode = 'api'; // Força modo API
+    }
+
+    // 2. Limpa cache de embeddings
+    if (this.embeddings.cache) {
+      const cacheSize = this.embeddings.cache.size;
+      this.embeddings.cache.clear();
+      logger.info(`[MemoryManager] Cache de embeddings limpo (${cacheSize} entradas)`);
+    }
+
+    // 3. Força garbage collection se disponível
+    if (global.gc) {
+      global.gc();
+      logger.info('[MemoryManager] Garbage collection executado');
+    }
+
+    // 4. Notifica sistema
+    this.emit('degraded', {
+      mode: 'api-only',
+      reason: 'memory_pressure'
+    });
+  }
+
+  // Restaura recursos quando memória normaliza
+  async restore() {
+    this.isDegraded = false;
+
+    // Recarrega modelo de embeddings se estava em modo local
+    if (this.config.embeddings.mode === 'local') {
+      logger.info('[MemoryManager] Recarregando modelo de embeddings');
+      await this.embeddings.initLocalModel();
+      this.embeddings.mode = 'local';
+    }
+
+    this.emit('restored');
+  }
+
+  // Status atual
+  getStatus() {
+    const usage = process.memoryUsage();
+    return {
+      heapUsedMB: Math.round(usage.heapUsed / (1024 * 1024)),
+      heapTotalMB: Math.round(usage.heapTotal / (1024 * 1024)),
+      heapUsagePercent: Math.round((usage.heapUsed / usage.heapTotal) * 100),
+      isDegraded: this.isDegraded,
+      embeddingsMode: this.embeddings.mode
+    };
+  }
+}
+```
+
+**Degradation Levels:**
+
+| Heap Usage | Ação |
+|------------|------|
+| < 80% | Normal - todos os recursos ativos |
+| 80-91% | Alerta - log de aviso |
+| > 91% | Degradação - descarregar embeddings, limpar cache |
+| > 95% | Crítico - modo emergência (apenas skills base, sem LLM) |
+
+**Configuração:**
+```json
+{
+  "memory": {
+    "threshold": 0.91,
+    "criticalThreshold": 0.95,
+    "checkInterval": 30000,
+    "enableGC": true
+  }
+}
+```
+
+**Nota:** O garbage collector explícito (`global.gc()`) requer Node.js iniciado com `--expose-gc`. Em produção, use PM2 ou systemd para reiniciar o processo se a memória ficar crítica por muito tempo.
+
 ### 5.3 `rag.js` - Consultas Semânticas
 
 **Função:** Busca skills e fatos por similaridade
@@ -618,6 +1056,105 @@ export default EmbeddingsManager;
 **Exemplo:**
 - Input: `"onde está o baú de ferro?"`
 - Output: `{ skills: [], facts: [{ type: 'chest', key: 'chest_iron', value: {x: 150, ...} }] }`
+
+### 5.3.1 Hybrid Search (Busca Híbrida)
+
+**Problema:** Buscas puramente semânticas não permitem filtros precisos como "coordenadas onde X > 100" ou "fatos do tipo 'regra'".
+
+**Solução:** Combinar busca vetorial com filtros SQL tradicionais.
+
+```javascript
+// memory/hybridSearch.js
+
+class HybridSearch {
+  constructor(db, embeddings) {
+    this.db = db;
+    this.embeddings = embeddings;
+  }
+
+  // Busca híbrida: semântica + filtros
+  async search(query, options = {}) {
+    const {
+      type = null,           // Filtrar por tipo: 'skill', 'fact', 'location'
+      minSimilarity = 0.7,   // Threshold mínimo de similaridade
+      maxResults = 5,       // Máximo de resultados
+      filters = {},         // Filtros SQL adicionais
+      embeddingSource = 'local' // 'local' ou 'api'
+    } = options;
+
+    // 1. Gera embedding da query
+    const queryVector = await this.embeddings.vectorize(query);
+
+    // 2. Escolhe a tabela correta baseado no source
+    const vssTable = embeddingSource === 'api' ? 'skills_vss_api' : 'skills_vss_local';
+
+    // 3. Monta query híbrida
+    let sql = `
+      SELECT
+        m.id,
+        m.name,
+        m.description,
+        m.file_path,
+        v.distance
+      FROM ${vssTable} v
+      JOIN skills_metadata m ON v.rowid = m.id
+      WHERE v.distance < ${1 - minSimilarity}
+    `;
+
+    // 4. Adiciona filtros dinâmicos
+    const params = [JSON.stringify(queryVector)];
+
+    if (filters.createdAfter) {
+      sql += ` AND m.created_at > ?`;
+      params.push(filters.createdAfter);
+    }
+
+    if (filters.tags && filters.tags.length > 0) {
+      sql += ` AND m.tags LIKE ?`;
+      params.push(`%${filters.tags[0]}%`);
+    }
+
+    sql += ` ORDER BY v.distance ASC LIMIT ?`;
+    params.push(maxResults);
+
+    // 5. Executa com VSS
+    return this.db.queryVSS(sql, queryVector, params);
+  }
+
+  // Exemplos de uso:
+
+  // Buscar skills por significado
+  async findSkills(description) {
+    return this.search(description, { type: 'skill' });
+  }
+
+  // Buscar fatos com filtros espaciais
+  async findNearbyFacts(x, z, radius, description) {
+    const results = await this.search(description, { type: 'fact' });
+    return results.filter(f => {
+      const coords = JSON.parse(f.value);
+      return Math.abs(coords.x - x) <= radius && Math.abs(coords.z - z) <= radius;
+    });
+  }
+
+  // Buscar skills recentes
+  async findRecentSkills(days = 7) {
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - days);
+
+    return this.search('*', {
+      type: 'skill',
+      filters: { createdAfter: cutoff.toISOString() },
+      maxResults: 10
+    });
+  }
+}
+```
+
+**Casos de Uso:**
+- `"onde está o baú de ferro?"` → Busca semântica + filtro tipo='chest'
+- `"skills de mineração aprendidas esta semana"` → Busca semântica + filtro temporal
+- `"fatos sobre a base nas coordenadas X > 100"` → Busca semântica + filtro espacial
 
 ### 5.4 `facts.js` - Gerenciador de Fatos
 
@@ -795,19 +1332,22 @@ class SkillDocumentation {
 
     // Salva metadados no banco
     await this.db.run(`
-      INSERT INTO skills_metadata (name, description, file_path, parameters, returns, examples, tags, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO skills_metadata (name, description, file_path, parameters, returns, examples, tags, embedding_source, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [doc.name, doc.description, filename, JSON.stringify(doc.parameters),
         JSON.stringify(doc.returns), JSON.stringify(doc.examples),
-        JSON.stringify(doc.tags), Date.now()]);
+        JSON.stringify(doc.tags), this.embeddings.source, Date.now()]);
 
-    // Salva embedding na tabela vetorial
+    // Escolhe tabela correta baseado no tipo de embedding
+    const vssTable = this.embeddings.source === 'api' ? 'skills_vss_api' : 'skills_vss_local';
+
+    // Salva embedding na tabela vetorial correta
     await this.db.run(`
-      INSERT INTO skills_vss (rowid, embedding)
+      INSERT INTO ${vssTable} (rowid, embedding)
       VALUES (?, ?)
     `, [this.db.lastInsertRowId, JSON.stringify(doc.embedding)]);
 
-    logger.info(`[SkillDoc] Skill salva: ${doc.name}`);
+    logger.info(`[SkillDoc] Skill salva: ${doc.name} (embedding: ${this.embeddings.source})`);
     return doc;
   }
 
@@ -815,14 +1355,18 @@ class SkillDocumentation {
   async findByDescription(query) {
     const queryEmbedding = await this.embeddings.vectorize(query);
 
+    // Escolhe tabela correta baseado no tipo de embedding configurado
+    const vssTable = this.embeddings.source === 'api' ? 'skills_vss_api' : 'skills_vss_local';
+
     const results = await this.db.all(`
-      SELECT sm.name, sm.description, sm.file_path, sm.tags,
+      SELECT sm.name, sm.description, sm.file_path, sm.tags, sm.embedding_source,
              vec_distance_cosine(sv.embedding, ?) as distance
       FROM skills_metadata sm
-      JOIN skills_vss sv ON sm.rowid = sv.rowid
+      JOIN ${vssTable} sv ON sm.rowid = sv.rowid
+      WHERE sm.embedding_source = ?
       ORDER BY distance ASC
       LIMIT 5
-    `, [JSON.stringify(queryEmbedding)]);
+    `, [JSON.stringify(queryEmbedding), this.embeddings.source]);
 
     return results;
   }
@@ -913,16 +1457,41 @@ function validateSyntax(code) {
 
 // 2. Análise estática de padrões proibidos
 const FORBIDDEN_PATTERNS = [
+  // Acesso direto a módulos
   /require\s*\(/,
   /import\s+/,
+
+  // eval e variantes
   /eval\s*\(/,
   /Function\s*\(/,
-  /process\./,
-  /global\./,
+  /\[\s*['"]eval['"]\s*\]/,           // ['eval']('code')
+
+  // Escapes de prototype
+  /this\s*\[\s*['"]constructor['"]\s*\]/,  // this['constructor']
+  /constructor\s*\.\s*constructor/,          // constructor.constructor
+  /__proto__/,
+
+  // Globais perigosos
+  /globalThis/,
+  /global\s*\(/,
+  /process\s*\./,
   /__dirname/,
   /__filename/,
+
+  // APIs de reflexão
+  /Reflect\s*\./,
+  /Proxy\s*\(/,
+
+  // Filesystem e network
   /fs\./,
-  /child_process/
+  /child_process/,
+  /http\./,
+  /https\./,
+  /net\./,
+
+  // Buffer e VM
+  /Buffer\s*\(/,
+  /vm\s*\./
 ];
 
 function analyzeCodeSafety(code) {
@@ -1083,6 +1652,182 @@ Tentativa 2: LLM re-genera com contexto do erro → Executa → ERRO
 - `loadDynamicSkills()` - carrega do banco
 - `register(skill, isBase)` - registra nova skill
 - `findSimilar(description)` - busca por embedding
+
+### 6.5 Test-First Agent Loop (Redução de Thrashing)
+
+**Problema:** Quando o LLM gera código com erro, ele pode entrar em loops de correção infinitos, desperdiçando tokens e tempo. Referência: "Stop Burning Tokens: The Tests-First Agent Loop That Cuts Thrash by 50%".
+
+**Solução:** Validar código ANTES de executar no mundo real, usando testes simulados.
+
+```javascript
+// skills/testFirst.js
+
+class TestFirstLoop {
+  constructor(bot, sandbox) {
+    this.bot = bot;
+    this.sandbox = sandbox;
+    this.maxTestAttempts = 2;  // Testes simulados antes de executar de verdade
+  }
+
+  // Executa ciclo de geração + teste + correção
+  async generateAndTest(task, llmProvider) {
+    let code = null;
+    let testResult = null;
+    let attempts = 0;
+
+    // Fase 1: Geração inicial
+    code = await llmProvider.generateCode(task);
+
+    // Fase 2: Testes simulados (sem executar no Minecraft)
+    while (attempts < this.maxTestAttempts) {
+      testResult = await this.runSimulatedTest(code, task);
+
+      if (testResult.passed) {
+        // Teste passou - pronto para executar de verdade
+        logger.info('[TestFirst] Código passou nos testes simulados');
+        return { success: true, code };
+      }
+
+      // Teste falhou - tenta corrigir com contexto do erro
+      attempts++;
+      logger.warn(`[TestFirst] Teste simulado falhou (${attempts}/${this.maxTestAttempts})`);
+
+      if (attempts < this.maxTestAttempts) {
+        // Gera versão corrigida com contexto do erro
+        code = await llmProvider.regenerateWithErrors(
+          code,
+          testResult.error,
+          task
+        );
+      }
+    }
+
+    // Fase 3: Limite de testes atingido
+    // Pode ainda executar, mas com aviso
+    logger.warn('[TestFirst] Máximo de testes simulados atingido, executando mesmo assim');
+    return {
+      success: false,
+      code,
+      testError: testResult?.error,
+      warning: 'Código não passou nos testes simulados'
+    };
+  }
+
+  // Teste simulado (mock do bot)
+  async runSimulatedTest(code, task) {
+    // Cria ambiente mockado
+    const mockBot = this.createMockBot();
+    const mockState = { currentTask: task };
+
+    try {
+      // Executa em sandbox mockado
+      const result = await this.sandbox.executeInMock(code, {
+        bot: mockBot,
+        state: mockState
+      });
+
+      // Verifica se código atende requisitos básicos
+      const violations = this.checkBasicRequirements(code, task);
+      if (violations.length > 0) {
+        return {
+          passed: false,
+          error: `Requisitos não atendidos: ${violations.join(', ')}`
+        };
+      }
+
+      return { passed: true, result };
+    } catch (error) {
+      return {
+        passed: false,
+        error: error.message,
+        stack: error.stack
+      };
+    }
+  }
+
+  // Cria mock do bot para testes
+  createMockBot() {
+    return {
+      // Mock de inventário
+      inventory: {
+        items: () => [{ name: 'dirt', count: 64 }],
+        count: (item) => item === 'dirt' ? 64 : 0
+      },
+
+      // Mock de posição
+      entity: {
+        position: { x: 0, y: 64, z: 0 }
+      },
+
+      // Mock de pathfinder
+      pathfinder: {
+        goto: async () => {},
+        stop: () => {}
+      },
+
+      // Mock de blocos
+      findBlocks: () => [],
+      blockAt: () => ({ name: 'air', position: { x: 0, y: 64, z: 0 } }),
+
+      // Mock de chat
+      chat: (msg) => console.log(`[MOCK] ${msg}`),
+
+      // Health e food
+      health: 20,
+      food: 20
+    };
+  }
+
+  // Verifica requisitos básicos do código
+  checkBasicRequirements(code, task) {
+    const violations = [];
+
+    // Verifica se código usa try/catch (obrigatório)
+    if (!code.includes('try') || !code.includes('catch')) {
+      violations.push('Código deve ter tratamento de erros (try/catch)');
+    }
+
+    // Verifica se código é assíncrono (obrigatório para skills)
+    if (!code.includes('async') && !code.includes('await')) {
+      violations.push('Código deve ser assíncrono');
+    }
+
+    // Verifica se usa apenas métodos permitidos
+    const allowedMethods = [
+      'bot.pathfinder', 'bot.dig', 'bot.placeBlock', 'bot.findBlocks',
+      'bot.inventory', 'bot.equip', 'bot.toss', 'bot.chat', 'bot.lookAt',
+      'bot.health', 'bot.food', 'bot.entity.position'
+    ];
+
+    // Padrões proibidos já verificados em outro lugar
+
+    return violations;
+  }
+}
+```
+
+**Fluxo Test-First:**
+```
+1. LLM gera código
+   ↓
+2. Teste simulado em mock (SEM afetar Minecraft)
+   ↓
+3a. Passou? → Executa no mundo real
+   ↓
+3b. Falhou? → LLM corrige com contexto do erro
+   ↓
+4. Segundo teste simulado
+   ↓
+5a. Passou? → Executa no mundo real
+   ↓
+5b. Falhou? → Executa com aviso (ou aborta)
+```
+
+**Benefícios:**
+- Reduz "thrashing" de tokens em ~50%
+- Evita executar código claramente quebrado
+- Captura erros óbvios antes de gastar tokens
+- Não afeta o mundo real durante testes
 
 ---
 
@@ -1466,19 +2211,121 @@ src/
 
 ## 8. LLM Layer
 
-### 7.1 Providers Suportados
+### 8.1 Providers Suportados
 
 | Provider | Modelos | Classe |
 |----------|---------|--------|
-| **Google** | gemini-1.5-flash, gemini-1.5-pro, gemini-2.0-flash, gemini-2.5-flash-preview | GoogleProvider |
+| **Google** | gemini-2.5-flash, gemini-2.5-pro, gemini-3-flash-preview, gemini-3.1-flash-lite-preview | GoogleProvider |
 | **NVIDIA NIM** | deepseek-ai/deepseek-v3.2, minimaxai/minimax-m2.1, nvidia/nemotron-nano-12b-v2-vl, stepfun-ai/step-3.5-flash, z-ai/glm4.7 | OpenAICompatProvider |
 | **OpenRouter** | claude-3-haiku, gpt-4o-mini, stepfun/step-3.5-flash:free, gemini-2.5-flash | OpenAICompatProvider |
 | **Ollama Cloud** | gemini-2.5-flash-preview, glm-4.7, minimax-m2.1, nemotron-3-nano:30b, qwen3.5, kimi-k2.5, rnj-1 | OpenAICompatProvider |
 | **OpenAI** | gpt-4o-mini, gpt-4o, gpt-3.5-turbo | OpenAICompatProvider |
 
-> **Nota:** Modelos Gemini 3.x são placeholders para futuros lançamentos. Verificar documentação oficial do Google para modelos disponíveis.
+> **Nota:** Gemini 3.1 Flash-Lite é o modelo mais econômico ($0.25/1M input tokens). Gemini 2.5 será descontinuado em junho de 2026. Verificar [documentação oficial](https://ai.google.dev/gemini-api/docs/models) para modelos disponíveis.
 
-### 7.2 `router.js` - Roteamento + Fallback
+### 8.1.1 Model Selection (Configurável pelo Usuário)
+
+**Problema:** Usar o mesmo modelo para todas as tarefas desperdiça tokens em operações simples.
+
+**Solução:** Dois modos configuráveis pelo usuário:
+
+#### Modo Único (Padrão)
+Um único modelo para todas as operações:
+```json
+{
+  "llm": {
+    "mode": "single",
+    "model": "gemini-3.1-flash-lite-preview"
+  }
+}
+```
+
+#### Modo Tiered (Por Complexidade)
+Modelos diferentes para diferentes níveis de complexidade:
+```json
+{
+  "llm": {
+    "mode": "tiered",
+    "tiers": {
+      "simple": {
+        "model": "gemini-3.1-flash-lite-preview",
+        "useCases": ["chat", "translate", "summarize"],
+        "maxTokens": 500
+      },
+      "medium": {
+        "model": "gemini-2.5-flash",
+        "useCases": ["code", "plan", "skill"],
+        "maxTokens": 2000
+      },
+      "complex": {
+        "model": "gemini-3-flash-preview",
+        "useCases": ["reasoning", "multistep"],
+        "maxTokens": 8000
+      }
+    }
+  }
+}
+```
+
+#### Implementação
+```javascript
+// llm/modelSelector.js
+
+class ModelSelector {
+  constructor(config) {
+    this.mode = config.llm.mode || 'single';
+    this.config = config.llm;
+  }
+
+  // Seleciona modelo baseado no tipo de tarefa
+  selectModel(taskType, estimatedTokens) {
+    if (this.mode === 'single') {
+      return this.config.model;
+    }
+
+    // Modo tiered
+    const tiers = this.config.tiers;
+
+    // Tarefas simples: chat, translate, summarize
+    if (['chat', 'translate', 'summarize'].includes(taskType)) {
+      return tiers.simple.model;
+    }
+
+    // Tarefas médias: code, plan, skill generation
+    if (['code', 'plan', 'skill'].includes(taskType)) {
+      if (estimatedTokens > tiers.medium.maxTokens) {
+        return tiers.complex.model;
+      }
+      return tiers.medium.model;
+    }
+
+    // Tarefas complexas: reasoning, multistep
+    return tiers.complex.model;
+  }
+
+  // Estima complexidade baseado no contexto
+  estimateTaskType(prompt, context) {
+    const promptLength = prompt.length;
+    const hasCode = /```|function|async|await/.test(prompt);
+    const hasMultiStep = /passo|step|primeiro|depois|então/i.test(prompt);
+
+    if (hasMultiStep || context.nearbyEntities > 5) {
+      return 'complex';
+    }
+    if (hasCode || promptLength > 500) {
+      return 'medium';
+    }
+    return 'simple';
+  }
+}
+```
+
+**Benefícios:**
+- **Economia:** Tarefas simples usam modelo mais barato (75% economia)
+- **Flexibilidade:** Usuário escolhe o equilíbrio custo/qualidade
+- **Fallback:** Se tier falhar, tenta próximo tier mais capaz
+
+### 8.2 `router.js` - Roteamento + Fallback
 
 **Estratégia:**
 - `primary`: modelo para conversação (mais barato)
@@ -1491,13 +2338,128 @@ src/
 3. Desabilita provider temporariamente após N falhas
 4. Reabilita após cooldown
 
-### 7.3 `prompts.js` - Templates
+### 8.2.1 Circuit Breaker Pattern
+
+**Problema:** Fallback simples continua tentando providers mesmo quando todos estão falhando, desperdiçando tempo.
+
+**Solução:** Circuit Breaker que para tentativas após falhas consecutivas.
+
+```javascript
+// llm/circuitBreaker.js
+
+class CircuitBreaker {
+  constructor(threshold = 5, timeout = 60000) {
+    this.threshold = threshold;   // Falhas antes de abrir
+    this.timeout = timeout;       // Tempo até tentar novamente
+    this.failures = new Map();    // { provider: count }
+    this.states = new Map();       // { provider: 'closed'|'open'|'half-open' }
+    this.lastFailure = new Map(); // { provider: timestamp }
+  }
+
+  // Verifica se provider está disponível
+  canTry(provider) {
+    const state = this.states.get(provider) || 'closed';
+
+    if (state === 'closed') {
+      return true;
+    }
+
+    if (state === 'open') {
+      const lastFail = this.lastFailure.get(provider) || 0;
+      const elapsed = Date.now() - lastFail;
+
+      if (elapsed > this.timeout) {
+        // Transição para half-open
+        this.states.set(provider, 'half-open');
+        return true;
+      }
+
+      return false;
+    }
+
+    // half-open: permite uma tentativa
+    return true;
+  }
+
+  // Registra sucesso
+  onSuccess(provider) {
+    this.failures.set(provider, 0);
+    this.states.set(provider, 'closed');
+  }
+
+  // Registra falha
+  onFailure(provider) {
+    const count = (this.failures.get(provider) || 0) + 1;
+    this.failures.set(provider, count);
+    this.lastFailure.set(provider, Date.now());
+
+    if (count >= this.threshold) {
+      this.states.set(provider, 'open');
+      logger.warn(`[CircuitBreaker] Provider ${provider} aberto após ${count} falhas`);
+    }
+  }
+
+  // Força reset (para testes ou admin)
+  reset(provider) {
+    this.failures.set(provider, 0);
+    this.states.set(provider, 'closed');
+    this.lastFailure.delete(provider);
+  }
+
+  // Status de todos os providers
+  getStatus() {
+    const status = {};
+    for (const [provider, state] of this.states) {
+      status[provider] = {
+        state,
+        failures: this.failures.get(provider) || 0,
+        lastFailure: this.lastFailure.get(provider)
+      };
+    }
+    return status;
+  }
+}
+```
+
+**Estados do Circuit Breaker:**
+- **Closed:** Funcionando normalmente, todas as requisições passam
+- **Open:** Falhou muitas vezes, rejeita todas as requisições por `timeout` segundos
+- **Half-Open:** Após timeout, permite uma requisição de teste
+
+**Uso com Fallback:**
+```javascript
+// No router.js
+async callLLM(prompt, context) {
+  const providers = ['primary', 'secondary', 'tertiary'];
+
+  for (const provider of providers) {
+    if (!circuitBreaker.canTry(provider)) {
+      logger.debug(`[Router] Provider ${provider} em circuit breaker`);
+      continue;
+    }
+
+    try {
+      const result = await this.providers[provider].call(prompt);
+      circuitBreaker.onSuccess(provider);
+      return result;
+    } catch (error) {
+      circuitBreaker.onFailure(provider);
+      logger.warn(`[Router] Provider ${provider} falhou: ${error.message}`);
+    }
+  }
+
+  // Todos os providers falharam ou estão em circuit breaker
+  throw new Error('Todos os providers estão indisponíveis');
+}
+```
+
+### 8.3 `prompts.js` - Templates
 
 **chatSystem:** Sistema conversacional em pt-BR, respostas concisas
 **codeSystem:** Geração de código JavaScript para Mineflayer
 **buildCodePrompt:** Template para gerar código com contexto do bot
 
-### 7.4 Semantic Snapshots (Redução de Contexto)
+### 8.4 Semantic Snapshots (Redução de Contexto)
 
 **Problema:** Enviar todo o histórico de conversa para o LLM consome muitos tokens e custa caro.
 
@@ -1577,7 +2539,7 @@ class SemanticSnapshot {
 
   // Blocos relevantes próximos
   getNearbyBlocks(range) {
-    const relevant = ['chest', 'furnace', 'crafting_table', 'furnace', 'ore', 'tree', 'water', 'lava'];
+    const relevant = ['chest', 'furnace', 'crafting_table', 'ore', 'tree', 'water', 'lava'];
     // Implementação busca blocos relevantes no range
     return []; // Simplificado
   }
@@ -1604,7 +2566,7 @@ Fatos relevantes: ${snapshot.relevantFacts.map(f => f.key).join(', ') || 'nenhum
 - Mantém apenas contexto relevante
 - Evita explosão de histórico
 
-### 7.5 Prompt Caching (Economia de Custos)
+### 8.5 Prompt Caching (Economia de Custos)
 
 **Problema:** O preâmbulo do sistema (regras do bot, métodos do Mineflayer, exemplos) é enviado em TODA chamada, desperdiçando tokens.
 
@@ -1685,6 +2647,128 @@ class PromptCache {
 - **OpenAI:** Cache automático de system prompts
 - **NVIDIA/OpenRouter:** Suporte varia por provider
 
+### 8.6 Minified Documentation (Documentação Compacta da API)
+
+**Problema:** Enviar a documentação completa do Mineflayer para o LLM em cada chamada consome muitos tokens e aumenta custos.
+
+**Solução:** Incluir apenas uma versão minificada dos métodos permitidos, reduzindo o contexto de ~50KB para ~3KB.
+
+```javascript
+// llm/minifiedDocs.js
+
+class MinifiedDocs {
+  constructor() {
+    // Apenas métodos permitidos e essenciais
+    this.allowedMethods = {
+      // Movimento
+      'bot.pathfinder.goto': 'Vai até coordenada. Args: GoalBlock(x,y,z)',
+      'bot.pathfinder.stop': 'Para movimento.',
+      'bot.setControlState': 'Define estado. Args: control(str), state(bool)',
+      'bot.jump': 'Pula.',
+
+      // Blocos
+      'bot.dig': 'Quebra bloco. Args: block, forceAnimate(bool)',
+      'bot.placeBlock': 'Coloca bloco. Args: referenceBlock, faceVector',
+      'bot.findBlocks': 'Encontra blocos. Args: matching, maxDistance, count',
+      'bot.blockAt': 'Bloco em posição. Args: position',
+
+      // Inventário
+      'bot.inventory.items': 'Lista itens do inventário.',
+      'bot.equip': 'Equipa item. Args: item, destination',
+      'bot.unequip': 'Desequipa. Args: destination',
+      'bot.toss': 'Joga item. Args: itemType, metadata, count',
+      'bot.openChest': 'Abre baú. Args: chestBlock',
+      'bot.closeWindow': 'Fecha janela.',
+
+      // Entidades
+      'bot.entities': 'Objeto com todas entidades visíveis.',
+      'bot.nearestEntity': 'Entidade mais próxima. Args: filter',
+      'bot.attack': 'Ataca entidade. Args: entity',
+
+      // Chat
+      'bot.chat': 'Envia mensagem no chat. Args: message',
+      'bot.whisper': 'Sussurra para jogador. Args: username, message',
+
+      // Utilitários
+      'bot.lookAt': 'Olha para ponto. Args: point',
+      'bot.entity.position': 'Posição atual do bot.',
+      'bot.health': 'Vida atual.',
+      'bot.food': 'Fome atual.'
+    };
+  }
+
+  // Gera documentação minificada para o prompt
+  generate() {
+    const docs = Object.entries(this.allowedMethods)
+      .map(([method, desc]) => `${method}: ${desc}`)
+      .join('\n');
+
+    return `
+[API MINEFLAYER - Métodos Permitidos]
+${docs}
+
+[RESTRIÇÕES]
+- NÃO use require() ou import
+- NÃO acesse filesystem
+- NÃO faça requisições HTTP
+- Use APENAS os métodos listados acima
+- Sempre use try/catch em operações assíncronas
+`.trim();
+  }
+
+  // Verifica se código usa apenas métodos permitidos
+  validateCode(code) {
+    const usedMethods = [];
+
+    for (const method of Object.keys(this.allowedMethods)) {
+      const regex = new RegExp(method.replace(/\./g, '\\.'), 'g');
+      if (regex.test(code)) {
+        usedMethods.push(method);
+      }
+    }
+
+    return {
+      allowed: usedMethods,
+      unknown: this.findUnknownMethods(code)
+    };
+  }
+
+  findUnknownMethods(code) {
+    // Detecta padrões como bot.algo ou bot.algo.algo
+    const methodPattern = /bot\.[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*/g;
+    const matches = code.match(methodPattern) || [];
+
+    return matches.filter(m => !this.allowedMethods[m]);
+  }
+}
+
+module.exports = MinifiedDocs;
+```
+
+**Uso no Prompt:**
+```javascript
+// Em prompts.js
+const minifiedDocs = new MinifiedDocs();
+
+const codeSystemPrompt = `
+Você é um assistente que gera código JavaScript para controlar um bot de Minecraft.
+
+${minifiedDocs.generate()}
+
+[INSTRUÇÕES]
+1. Gere código JavaScript assíncrono usando APENAS os métodos permitidos
+2. Use try/catch para tratamento de erros
+3. Retorne JSON com campo "code" contendo o código
+4. Comente o código em português brasileiro
+`;
+```
+
+**Benefícios:**
+- Reduz contexto de ~50KB para ~3KB
+- Segurança: expõe apenas métodos permitidos
+- Validação: detecta uso de métodos não permitidos
+- Manutenção: fácil atualização de métodos
+
 ---
 
 ## 9. Utils Layer
@@ -1713,6 +2797,133 @@ class PromptCache {
 - `truncate(text, maxLength)` - trunca texto
 - `sanitizeFilename(name)` - sanitiza nome de arquivo
 - `timestamp()` - timestamp para skills dinâmicas
+
+### 9.4 `healthCheck.js` - Verificação de Integridade
+
+**Função:** Verifica se todos os componentes do sistema estão funcionais.
+
+```javascript
+// utils/healthCheck.js
+
+class HealthCheck {
+  constructor(bot, db, embeddings, llm) {
+    this.bot = bot;
+    this.db = db;
+    this.embeddings = embeddings;
+    this.llm = llm;
+  }
+
+  // Verifica saúde completa do sistema
+  async checkAll() {
+    const results = {
+      timestamp: new Date().toISOString(),
+      overall: 'healthy',
+      components: {}
+    };
+
+    // 1. Conexão com Minecraft
+    results.components.minecraft = this.checkMinecraft();
+
+    // 2. Banco de dados
+    results.components.database = await this.checkDatabase();
+
+    // 3. Embeddings
+    results.components.embeddings = this.checkEmbeddings();
+
+    // 4. LLM Provider
+    results.components.llm = await this.checkLLM();
+
+    // 5. Memória RAM
+    results.components.memory = this.checkMemory();
+
+    // Determina status geral
+    const hasUnhealthy = Object.values(results.components)
+      .some(c => c.status === 'unhealthy');
+
+    if (hasUnhealthy) {
+      results.overall = 'degraded';
+    }
+
+    return results;
+  }
+
+  checkMinecraft() {
+    return {
+      status: this.bot?.entity ? 'healthy' : 'unhealthy',
+      connected: !!this.bot?.entity,
+      position: this.bot?.entity?.position || null,
+      health: this.bot?.health || 0,
+      food: this.bot?.food || 0
+    };
+  }
+
+  async checkDatabase() {
+    try {
+      await this.db.get('SELECT 1');
+      return { status: 'healthy', type: 'sqlite-vec' };
+    } catch (error) {
+      return { status: 'unhealthy', error: error.message };
+    }
+  }
+
+  checkEmbeddings() {
+    return {
+      status: this.embeddings?.localModel ? 'healthy' : 'not_loaded',
+      mode: this.embeddings?.mode || 'unknown',
+      cacheSize: this.embeddings?.cache?.size || 0
+    };
+  }
+
+  async checkLLM() {
+    try {
+      // Teste simples - apenas verifica se provider está configurado
+      const provider = this.llm?.router?.primary;
+      return {
+        status: provider ? 'healthy' : 'unhealthy',
+        provider: provider?.name || 'none'
+      };
+    } catch (error) {
+      return { status: 'unhealthy', error: error.message };
+    }
+  }
+
+  checkMemory() {
+    const usage = process.memoryUsage();
+    const MB = 1024 * 1024;
+
+    return {
+      status: usage.heapUsed / usage.heapTotal < 0.91 ? 'healthy' : 'warning',
+      heapUsedMB: Math.round(usage.heapUsed / MB),
+      heapTotalMB: Math.round(usage.heapTotal / MB),
+      externalMB: Math.round(usage.external / MB),
+      rssMB: Math.round(usage.rss / MB)
+    };
+  }
+
+  // Log de saúde para monitoramento
+  async logHealth() {
+    const health = await this.checkAll();
+
+    if (health.overall !== 'healthy') {
+      logger.warn('[HealthCheck] Sistema degradado:', health);
+    } else {
+      logger.debug('[HealthCheck] Sistema saudável');
+    }
+
+    return health;
+  }
+}
+```
+
+**Uso:**
+```javascript
+// No startup
+const health = new HealthCheck(bot, db, embeddings, llm);
+await health.logHealth();
+
+// Periodicamente (a cada 5 min)
+setInterval(() => health.logHealth(), 300000);
+```
 
 ---
 
@@ -1838,11 +3049,303 @@ const ROLES = {
 }
 ```
 
+### 10.6 Identidade do Bot e Detecção Multi-Bot
+
+**Problema:** Quando múltiplos bots estão no mesmo servidor, usar prefixo `!` causa confusão - todos os bots respondem ao mesmo comando.
+
+**Solução:** Sistema de identidade do bot com detecção automática de outros bots e mudança de modo de resposta.
+
+#### Configuração de Identidade
+
+```json
+{
+  "bot": {
+    "identity": {
+      "name": "ClawMC_Alpha",
+      "displayName": "Alpha",
+      "owner": "Luanv",
+      "ownerNickname": "Luan",
+      "role": "miner",
+      "color": "§b"  // Código de cor do Minecraft
+    },
+    "response": {
+      "mode": "auto",
+      "defaultPrefix": "!",
+      "mentionPrefix": true
+    }
+  }
+}
+```
+
+#### Modos de Resposta
+
+| Modo | Comportamento | Uso |
+|------|--------------|-----|
+| `single` | Sempre usa `!` prefixo | Apenas um bot no servidor |
+| `mention` | Sempre requer `@bot_name` | Múltiplos bots |
+| `auto` | Detecta e ajusta automaticamente | **Recomendado** |
+
+#### Implementação
+
+```javascript
+// core/botIdentity.js
+
+class BotIdentity {
+  constructor(config, bot) {
+    this.config = config;
+    this.bot = bot;
+    this.name = config.bot.identity.name;
+    this.displayName = config.bot.identity.displayName;
+    this.owner = config.bot.identity.owner;
+    this.ownerNickname = config.bot.identity.ownerNickname;
+
+    // Modo de resposta
+    this.responseMode = config.bot.response.mode; // 'single', 'mention', 'auto'
+    this.defaultPrefix = config.bot.response.defaultPrefix;
+    this.knownPeers = new Map(); // Outros bots detectados
+    this.isMultiBotMode = false;
+  }
+
+  // Inicializa detecção de outros bots
+  async init() {
+    // Anuncia presença
+    this.announcePresence();
+
+    // Escuta por anúncios de outros bots
+    this.bot.on('chat', (username, message) => {
+      this.detectOtherBot(username, message);
+    });
+
+    // Se modo auto, verifica após 30 segundos
+    if (this.responseMode === 'auto') {
+      setTimeout(() => this.checkMultiBotMode(), 30000);
+    }
+  }
+
+  // Anuncia presença no servidor
+  announcePresence() {
+    const announcement = `[COMM:HELLO] ${JSON.stringify({
+      name: this.name,
+      displayName: this.displayName,
+      owner: this.owner,
+      role: this.config.bot.identity.role,
+      timestamp: Date.now()
+    })}`;
+
+    this.bot.chat(announcement);
+  }
+
+  // Detecta outros bots no servidor
+  detectOtherBot(username, message) {
+    // Ignora próprias mensagens
+    if (username === this.bot.username) return;
+
+    // Verifica se é anúncio de bot
+    if (message.startsWith('[COMM:HELLO]')) {
+      try {
+        const data = JSON.parse(message.replace('[COMM:HELLO]', '').trim());
+
+        // Registra peer
+        this.knownPeers.set(data.name, {
+          ...data,
+          lastSeen: Date.now()
+        });
+
+        logger.info(`[BotIdentity] Bot detectado: ${data.name} (owner: ${data.owner})`);
+
+        // Atualiza modo se necessário
+        if (this.responseMode === 'auto') {
+          this.enableMultiBotMode();
+        }
+      } catch (e) {
+        // Não é um anúncio de bot válido
+      }
+    }
+  }
+
+  // Verifica se deve usar modo multi-bot
+  checkMultiBotMode() {
+    if (this.knownPeers.size > 0) {
+      this.enableMultiBotMode();
+    } else {
+      logger.info('[BotIdentity] Nenhum outro bot detectado, mantendo modo single');
+    }
+  }
+
+  // Ativa modo multi-bot
+  enableMultiBotMode() {
+    if (this.isMultiBotMode) return;
+
+    this.isMultiBotMode = true;
+    logger.info(`[BotIdentity] Modo multi-bot ativado. Respondendo apenas a @${this.name}`);
+
+    // Notifica owner
+    this.bot.chat(`Modo multi-bot ativado. Use @${this.name} para me chamar.`);
+  }
+
+  // Verifica se mensagem é para este bot
+  isForMe(username, message) {
+    // Modo single: aceita prefixo !
+    if (!this.isMultiBotMode) {
+      return message.startsWith(this.defaultPrefix);
+    }
+
+    // Modo multi-bot: requer menção
+    const mentionPattern = new RegExp(`@${this.name}|@${this.displayName}`, 'i');
+    if (mentionPattern.test(message)) {
+      return true;
+    }
+
+    // Owner pode usar comando direto (sem menção)
+    if (username === this.owner || username === this.ownerNickname) {
+      // Mas apenas se a mensagem NÃO parece ser para outro bot
+      const otherBotMention = Array.from(this.knownPeers.values())
+        .some(peer => message.includes(`@${peer.name}`) || message.includes(`@${peer.displayName}`));
+
+      if (!otherBotMention && message.startsWith(this.defaultPrefix)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // Extrai comando da mensagem
+  parseCommand(username, message) {
+    let command = message;
+
+    // Remove menção se presente
+    command = command.replace(new RegExp(`@${this.name}|@${this.displayName}`, 'gi'), '').trim();
+
+    // Remove prefixo
+    if (command.startsWith(this.defaultPrefix)) {
+      command = command.slice(this.defaultPrefix.length).trim();
+    }
+
+    return command;
+  }
+
+  // Lista bots conhecidos
+  listKnownPeers() {
+    return Array.from(this.knownPeers.values());
+  }
+
+  // Verifica se owner está online
+  isOwnerOnline() {
+    const players = Object.keys(this.bot.players);
+    return players.includes(this.owner) || players.includes(this.ownerNickname);
+  }
+}
+```
+
+#### Integração com Commands
+
+```javascript
+// core/commands.js
+
+class CommandParser {
+  constructor(identity) {
+    this.identity = identity;
+  }
+
+  parse(username, message) {
+    // Verifica se mensagem é para este bot
+    if (!this.identity.isForMe(username, message)) {
+      return null; // Ignora mensagem
+    }
+
+    // Extrai comando
+    const command = this.identity.parseCommand(username, message);
+
+    // Parseia argumentos
+    const parts = command.split(/\s+/);
+    const intent = parts[0]?.toLowerCase();
+    const args = parts.slice(1);
+
+    return { intent, args, raw: command };
+  }
+}
+```
+
+#### Fluxo de Detecção
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    BOT STARTUP                                   │
+│                                                                  │
+│  1. Bot conecta ao servidor                                      │
+│  2. Carrega config.bot.identity                                  │
+│  3. responseMode = "auto"                                        │
+│  4. Aguarda 30 segundos                                          │
+│                                                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                    DETECÇÃO                                      │
+│                                                                  │
+│  [COMM:HELLO] {"name":"Bot_Alpha","owner":"Luanv"}              │
+│  ┌─────────────────────────────────────────────────────────────┐  │
+│  │ Bot A (Luanv)                                               │  │
+│  │ - Recebe HELLO de Bot B                                     │  │
+│  │ - knownPeers.set("Bot_B", {...})                            │  │
+│  │ - enableMultiBotMode()                                       │  │
+│  │ - Agora responde apenas a @Bot_A                            │  │
+│  └─────────────────────────────────────────────────────────────┘  │
+│                                                                  │
+├─────────────────────────────────────────────────────────────────┤
+│                    MODO MULTI-BOT                                │
+│                                                                  │
+│  Jogador: "!mine iron"                                           │
+│  → Bot A: IGNORA (requer @Bot_A)                                │
+│  → Bot B: IGNORA (requer @Bot_B)                                │
+│                                                                  │
+│  Jogador: "@Bot_A mine iron"                                     │
+│  → Bot A: Executa comando                                        │
+│  → Bot B: IGNORA                                                 │
+│                                                                  │
+│  Owner (Luanv): "!mine iron"                                     │
+│  → Bot A: Executa comando (owner tem privilégio)                 │
+│  → Bot B: IGNORA                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Configuração Completa
+
+```json
+{
+  "bot": {
+    "identity": {
+      "name": "ClawMC_Alpha",
+      "displayName": "Alpha",
+      "owner": "Luanv",
+      "ownerNickname": "Luan",
+      "role": "miner",
+      "color": "§b"
+    },
+    "response": {
+      "mode": "auto",
+      "defaultPrefix": "!",
+      "mentionPrefix": true,
+      "ownerPrivilege": true
+    },
+    "server": {
+      "host": "localhost",
+      "port": 25565,
+      "version": "1.20.4"
+    }
+  }
+}
+```
+
+**Notas:**
+- `mode: "auto"` é recomendado para flexibilidade
+- `ownerPrivilege: true` permite que o owner use `!comando` sem menção
+- `color` é o código de cor do Minecraft para o nome do bot no chat
+- O bot só responde ao owner sem menção se não houver menção a outro bot na mesma mensagem
+
 ---
 
 ## 11. Configuração
 
-### 9.1 `config.json`
+### 11.1 `config.json`
 
 ```json
 {
@@ -1900,7 +3403,7 @@ const ROLES = {
 }
 ```
 
-### 9.2 `.env.example`
+### 11.2 `.env.example`
 
 ```env
 # Google Gemini
@@ -1956,7 +3459,7 @@ jogador digita: "!construa uma casa de pedra 10x10"
 │    → Envia para codeModel (NVIDIA → deepseek-v3.2)                          │
 │    → Recebe código JavaScript assíncrono                                     │
 │    → Salva em skills/dynamic/construir_casa_2026-03-17.js                    │
-│    → Salva embedding em skills_vss                                           │
+│    → Salva embedding em skills_vss_local (ou _api)                            │
 └─────────────────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -1975,32 +3478,32 @@ jogador digita: "!construa uma casa de pedra 10x10"
 
 ## 13. Tratamento de Erros
 
-### 11.1 Reconexão Automática
+### 13.1 Reconexão Automática
 
 - Backoff exponencial: 5s → 10s → 20s → 40s...
 - Máximo de 10 tentativas
 - Reconecta automaticamente em caso de disconnect/kick
 
-### 11.2 Timeout de Tarefas
+### 13.2 Timeout de Tarefas
 
 - Timeout padrão: 30 minutos (configurável)
 - Auto-cancela tarefa se exceder
 - Notifica via chat
 
-### 11.3 Fallback de Provider LLM
+### 13.3 Fallback de Provider LLM
 
 - Rate limit (429): aguarda `retry-after` segundos
 - Erro de auth (401/403): desabilita provider permanentemente
 - Erro de servidor (5xx): tenta próximo provider
 - Timeout de conexão: retry após 3s
 
-### 11.4 Sandbox de Execução
+### 13.4 Sandbox de Execução
 
 - Timeout de 30 segundos
 - Sem acesso a: filesystem, network, process, require
 - Apenas: bot, params, console limitado, Math, Date
 
-### 11.5 Falha Total de Providers LLM
+### 13.5 Falha Total de Providers LLM
 
 Quando **todos** os providers falham:
 
@@ -2023,7 +3526,7 @@ async function handleTotalLLMFailure() {
 }
 ```
 
-### 11.6 Concorrência de Comandos
+### 13.6 Concorrência de Comandos
 
 Modelo de tarefa única (single-task):
 
@@ -2055,7 +3558,7 @@ async function handleNewCommand(parsed, username) {
 }
 ```
 
-### 11.7 Estado Durante Morte/Respawn
+### 13.7 Estado Durante Morte/Respawn
 
 ```javascript
 // Em state.js
@@ -2080,7 +3583,7 @@ restoreAfterRespawn() {
 }
 ```
 
-### 11.8 Recuperação de Skills Dinâmicas Corrompidas
+### 13.8 Recuperação de Skills Dinâmicas Corrompidas
 
 Se uma skill dinâmica falhar ao carregar:
 
@@ -2133,7 +3636,7 @@ function handleCorruptedSkill(filePath, error) {
 
 ## 15. Gerenciamento de Custos
 
-### 14.1 Rastreamento de Uso
+### 15.1 Rastreamento de Uso
 
 ```javascript
 class CostTracker {
@@ -2179,14 +3682,14 @@ class CostTracker {
 }
 ```
 
-### 14.2 Rate Limiting
+### 15.2 Rate Limiting
 
 ```javascript
 // Configuração de rate limiting
 const RATE_LIMITS = {
   maxRequestsPerMinute: 10,
-  maxRequestsPerHour: 100,
-  maxTokensPerDay: 500000
+  maxRequestsPerHour: 500,
+  maxTokensPerDay: 1500000
 };
 
 class RateLimiter {
@@ -2230,7 +3733,7 @@ class RateLimiter {
 }
 ```
 
-### 14.3 Alertas de Custo
+### 15.3 Alertas de Custo
 
 ```javascript
 // Alertas configuráveis
@@ -2254,13 +3757,15 @@ function checkCostAlerts(cost) {
 
 ---
 
-## 16. Dependências Nativas (Windows)
+## 16. Dependências Nativas
 
-### 15.1 better-sqlite3
+### 16.1 better-sqlite3
 
 **Aviso:** `better-sqlite3` requer compilação nativa.
 
-**Windows:** Requer Visual Studio Build Tools
+#### Windows
+
+Requer Visual Studio Build Tools:
 
 ```bash
 # Instalar Build Tools
@@ -2270,7 +3775,35 @@ npm install --global windows-build-tools
 npm install sql.js  # Mais lento, mas sem dependências nativas
 ```
 
-### 15.2 isolated-vm
+#### Linux
+
+Requer ferramentas de compilação C++:
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install build-essential python3
+
+# Fedora/RHEL
+sudo dnf install gcc-c++ make python3
+
+# Arch Linux
+sudo pacman -S base-devel python
+
+# Após instalar dependências
+npm rebuild better-sqlite3
+```
+
+**Troubleshooting Linux:**
+```bash
+# Se falhar com "node-gyp" errors:
+npm install --global node-gyp
+node-gyp rebuild --directory node_modules/better-sqlite3
+
+# Para ARM (Raspberry Pi, etc.)
+npm rebuild better-sqlite3 --target_arch=arm64
+```
+
+### 16.2 isolated-vm
 
 **Aviso:** `isolated-vm` também requer compilação nativa.
 
@@ -2280,6 +3813,16 @@ npm rebuild isolated-vm
 
 # Se falhar, usar alternativa Node.js built-in
 # Nota: vm module é menos seguro, requer validação extra
+```
+
+#### Linux
+
+```bash
+# Ubuntu/Debian
+sudo apt-get install build-essential python3
+
+# Compilar
+npm rebuild isolated-vm
 ```
 
 ---
@@ -2306,16 +3849,25 @@ Após aprovação deste design:
 | Componente | Status | Prioridade |
 |------------|--------|------------|
 | Core Layer | Definido | Alta |
+| **Circadian Cycle Events** | Definido | Média |
+| **State Persistence** | Definido | Média |
 | Autonomy Layer (Voyager) | Definido | Alta |
 | Memory Layer (Híbrido) | Definido | Alta |
+| **Graceful Degradation (91%)** | Definido | Alta |
+| **Hybrid Search** | Definido | Alta |
 | Skill Documentation Embedding | Definido | Alta |
 | Skills Layer | Definido | Alta |
+| **Test-First Agent Loop** | Definido | Média |
 | Dynamic Turn Limits | Definido | Alta |
 | LLM Layer (Multi-provider) | Definido | Alta |
+| **Model Selection (Configurável)** | Definido | Média |
+| **Circuit Breaker** | Definido | Média |
 | Semantic Snapshots | Definido | Alta |
 | Prompt Caching | Definido | Média |
+| **Minified Documentation** | Definido | Alta |
 | Community Layer (Multi-Bot) | Definido | Alta |
 | Utils Layer | Definido | Média |
+| **Health Check System** | Definido | Baixa |
 | Gerenciamento de Custos | Definido | Média |
 | Dependências Nativas | Documentado | Baixa |
 
