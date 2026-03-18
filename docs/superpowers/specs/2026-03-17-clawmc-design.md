@@ -20,8 +20,9 @@ ClawMC é um bot de Minecraft autônomo com IA, projetado para operar sob restri
 | **Motor: Mineflayer (Node.js)** | 150-350MB RAM vs 3000MB do Fabric/Java |
 | **IA: Loop OODA híbrido** | LLM apenas para situações inéditas, reduzindo custos |
 | **Memória: sqlite-vec (on-disk)** | Evita OOM de soluções in-memory como ChromaDB |
-| **Embeddings: Transformers.js local** | Zero custo de API para vetorização |
+| **Embeddings: Híbrido (local + API)** | Padrão multilíngue local, opção de API para maior precisão |
 | **Skills: Dinâmicas + Base** | Aprendizado contínuo com fundação de habilidades pré-definidas |
+| **Autonomia: Voyager + OpenClaw** | Currículo automático + agendamento cron para comportamento proativo |
 
 ### 1.3 Escopo da Versão Inicial
 
@@ -57,7 +58,7 @@ ClawMC é um bot de Minecraft autônomo com IA, projetado para operar sob restri
 │  │       │      MEMORY LAYER         │             │          │ │
 │  │  ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐  ┌────▼─────┐    │ │
 │  │  │Embeddings│  │   RAG    │  │  Facts   │  │ Database │    │ │
-│  │  │(Transformers│  │(sqlite-vec)│  │ Manager │  │(SQLite) │    │ │
+│  │  │(local+API)│  │(sqlite-vec)│  │ Manager │  │(SQLite) │    │ │
 │  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │ │
 │  └───────────────────────────────────────────────────────────────┘ │
 │                                                                   │
@@ -67,6 +68,14 @@ ClawMC é um bot de Minecraft autônomo com IA, projetado para operar sob restri
 │  │  │  Base    │  │ Dynamic  │  │ Executor │                    │ │
 │  │  │  Skills  │  │  Skills  │  │ (Sandbox)│                    │ │
 │  │  └──────────┘  └──────────┘  └──────────┘                    │ │
+│  └───────────────────────────────────────────────────────────────┘ │
+│                                                                   │
+│  ┌───────────────────────────────────────────────────────────────┐ │
+│  │                    AUTONOMY LAYER (Voyager+OpenClaw)           │ │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │ │
+│  │  │Curriculum│  │  Idle   │  │Scheduler │  │ Survival │       │ │
+│  │  │ Manager  │  │  Loop   │  │  (Cron)  │  │ Monitor  │       │ │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │ │
 │  └───────────────────────────────────────────────────────────────┘ │
 │                                                                   │
 │  ┌───────────────────────────────────────────────────────────────┐ │
@@ -93,6 +102,53 @@ ClawMC é um bot de Minecraft autônomo com IA, projetado para operar sob restri
 3. **Decide:** Se não encontrou skill local → LLM Layer gera código ou resposta
 4. **Act:** Skills Layer executa (base ou dinâmica em sandbox)
 
+### 2.2 Autonomia (Voyager + OpenClaw)
+
+O bot possui **comportamento proativo** baseado em três sistemas:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     FLUXO DE AUTONOMIA                          │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  Quando IDLE por 30 segundos:                                    │
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ 1. SURVIVAL CHECK                                        │    │
+│  │    if (fome < 10) → buscar comida                        │    │
+│  │    if (vida < 10) → fugir/regenerar                      │    │
+│  │    if (perigo) → defender ou escapar                    │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ 2. SCHEDULED TASKS (Cron)                                │    │
+│  │    Patrulhar base (a cada 5min)                          │    │
+│  │    Colher plantações (ao amanhecer)                      │    │
+│  │    Verificar baús (a cada 30min)                         │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ 3. CURRICULUM (Voyager)                                  │    │
+│  │    Avalia fase atual: survival → gathering → exploration │    │
+│  │    Gera próximo objetivo autônomo                         │    │
+│  │    Ex: "Explorar novo chunk", "Minerar ferro",           │    │
+│  │        "Aprender skill: fazer ferramentas"               │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              │                                   │
+│                              ▼                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │ 4. EXECUÇÃO                                              │    │
+│  │    Executa objetivo → Salva resultado → Volta ao idle    │    │
+│  │    (Interrompe se jogador der comando)                   │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**Resultado:** O bot pode operar autonomous por horas, coletando recursos, explorando, aprendendo novas habilidades e organizando baús.
+
 ---
 
 ## 3. Estrutura de Diretórios
@@ -112,10 +168,14 @@ ClawMC/
 │   │   ├── bot.js               # Conexão Mineflayer, eventos
 │   │   ├── ooda.js              # Loop OODA principal
 │   │   ├── commands.js          # Parser de comandos (prefixo)
-│   │   └── state.js             # Estado do bot (tarefa atual, timeout)
+│   │   ├── state.js             # Estado do bot (tarefa atual, timeout)
+│   │   ├── curriculum.js        # Gerenciador de currículo (Voyager)
+│   │   ├── idle.js              # Loop de autonomia
+│   │   ├── scheduler.js         # Tarefas agendadas (cron)
+│   │   └── survival.js          # Monitor de sobrevivência
 │   │
 │   ├── memory/
-│   │   ├── embeddings.js        # Transformers.js (all-MiniLM-L6-v2)
+│   │   ├── embeddings.js        # Sistema híbrido (local + API)
 │   │   ├── rag.js               # Consultas sqlite-vec
 │   │   ├── facts.js             # CRUD de fatos do mundo
 │   │   └── database.js          # Inicialização SQLite
@@ -133,6 +193,9 @@ ClawMC/
 │   │   │   ├── stop.js           # Parar tarefa
 │   │   │   ├── inventory.js      # Listar inventário
 │   │   │   ├── say.js            # Enviar mensagem
+│   │   │   ├── escape.js         # Fugir de perigo
+│   │   │   ├── find_food.js      # Encontrar comida
+│   │   │   ├── explore.js        # Explorar chunks
 │   │   │   └── index.js          # Registro de skills base
 │   │   ├── dynamic/               # Skills aprendidas (geradas)
 │   │   │   └── .gitkeep
@@ -314,58 +377,239 @@ CREATE TABLE executions (
 );
 ```
 
-### 5.2 `embeddings.js` - Transformers.js
+### 5.2 `embeddings.js` - Sistema Híbrido (Local + API)
 
-**Função:** Gera embeddings localmente (sem API)
+**Função:** Gera embeddings para busca semântica
 
-**Modelo:** `Xenova/all-MiniLM-L6-v2` (384 dimensões, quantizado)
+**Modo padrão:** Local (sem custo de API)
+**Modo opcional:** API (maior precisão)
 
-**Uso:** ~150-200MB RAM durante inferência, ~50-100ms por texto
+#### 5.2.1 Comparação de Modelos
 
-### 5.2.1 Gerenciamento de Memória
+| Modelo | Idiomas | RAM | Latência | PT-BR Score | Custo |
+|--------|---------|-----|----------|-------------|-------|
+| **Local: multilingual-e5-small** | 100+ | ~250MB | ~70ms | ✅ 88% | Zero |
+| **Local: paraphrase-multilingual-MiniLM-L12** | 50+ | ~250MB | ~80ms | ✅ 85% | Zero |
+| **API: Gemini Embedding-001** | 100+ | Zero | ~200ms | ✅ 95% | Free tier |
+| **API: NVIDIA NV-Embed** | 100+ | Zero | ~300ms | ✅ 95% | Free tier |
+
+**Recomendação:** `multilingual-e5-small` (local) como padrão, com opção de API.
+
+#### 5.2.2 Implementação Híbrida
 
 ```javascript
-// Gerenciamento de memória para embeddings
+// memory/embeddings.js
+
 class EmbeddingsManager {
-  constructor() {
-    this.model = null;
-    this.lastUsed = null;
-    this.unloadTimeout = null;
+  constructor(config) {
+    this.mode = config?.mode || 'local';
+    this.localModel = null;
+    this.apiProvider = null;
+    this.cache = new Map(); // Cache de embeddings
+    this.maxCacheSize = 1000;
   }
 
-  // Carrega modelo sob demanda
-  async loadModel() {
-    if (!this.model) {
-      logger.info('Carregando modelo de embeddings...');
-      this.model = await pipeline('feature-extraction',
-        'Xenova/all-MiniLM-L6-v2', { quantized: true });
+  async init() {
+    if (this.mode === 'local') {
+      await this.initLocalModel();
+    } else {
+      await this.initApiProvider();
     }
-    this.lastUsed = Date.now();
-    this.scheduleUnload();
-    return this.model;
   }
 
-  // Agenda descarregamento após 5 minutos de inatividade
+  // ========== MODO LOCAL ==========
+
+  async initLocalModel() {
+    logger.info('[Embeddings] Carregando modelo local multilíngue...');
+
+    const { pipeline } = await import('@huggingface/transformers');
+
+    this.localModel = await pipeline('feature-extraction',
+      'Xenova/multilingual-e5-small', {
+        quantized: true
+      }
+    );
+
+    logger.info('[Embeddings] Modelo carregado (~250MB RAM)');
+  }
+
+  async vectorizeLocal(text) {
+    if (!this.localModel) await this.initLocalModel();
+
+    const tensor = await this.localModel(text, {
+      pooling: 'mean',
+      normalize: true
+    });
+
+    return Array.from(tensor.data);
+  }
+
+  // ========== MODO API ==========
+
+  async initApiProvider() {
+    const config = global.config.embeddings.api;
+
+    if (config.provider === 'google') {
+      this.apiProvider = 'google';
+    } else if (config.provider === 'nvidia') {
+      this.apiProvider = 'nvidia';
+    } else {
+      throw new Error(`Provider de embedding não suportado: ${config.provider}`);
+    }
+  }
+
+  async vectorizeApi(text) {
+    // Google Gemini Embedding API
+    if (this.apiProvider === 'google') {
+      return await this.vectorizeGoogle(text);
+    }
+
+    // NVIDIA NV-Embed API
+    if (this.apiProvider === 'nvidia') {
+      return await this.vectorizeNvidia(text);
+    }
+  }
+
+  async vectorizeGoogle(text) {
+    const response = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'models/gemini-embedding-001',
+          content: { parts: [{ text }] }
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(`Google Embedding API error: ${data.error?.message}`);
+    }
+
+    return data.embedding.values;
+  }
+
+  async vectorizeNvidia(text) {
+    const response = await fetch(
+      'https://integrate.api.nvidia.com/v1/embeddings',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.NVIDIA_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'nvidia/nv-embed-v1',
+          input: text,
+          input_type: 'query'
+        })
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(`NVIDIA Embedding API error: ${data.error?.message}`);
+    }
+
+    return data.data[0].embedding;
+  }
+
+  // ========== INTERFACE PRINCIPAL ==========
+
+  async vectorize(text) {
+    // Verifica cache
+    const cacheKey = `${this.mode}:${text}`;
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey);
+    }
+
+    // Gera embedding
+    let embedding;
+    if (this.mode === 'local') {
+      embedding = await this.vectorizeLocal(text);
+    } else {
+      embedding = await this.vectorizeApi(text);
+    }
+
+    // Armazena em cache
+    if (this.cache.size >= this.maxCacheSize) {
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+    }
+    this.cache.set(cacheKey, embedding);
+
+    return embedding;
+  }
+
+  // Gerenciamento de memória (modo local)
   scheduleUnload() {
     if (this.unloadTimeout) clearTimeout(this.unloadTimeout);
 
     this.unloadTimeout = setTimeout(() => {
       if (Date.now() - this.lastUsed > 300000) { // 5 minutos
-        logger.info('Descarregando modelo de embeddings para liberar memória');
-        this.model = null;
+        logger.info('[Embeddings] Descarregando modelo para liberar memória');
+        this.localModel = null;
       }
     }, 300000);
   }
-
-  async vectorize(text) {
-    const model = await this.loadModel();
-    const tensor = await model(text, { pooling: 'mean', normalize: true });
-    return Array.from(tensor.data);
-  }
 }
 
-export default new EmbeddingsManager();
+export default EmbeddingsManager;
 ```
+
+#### 5.2.3 Configuração (`config.json`)
+
+```json
+{
+  "memory": {
+    "dbPath": "./data/brain.db",
+    "similarityThreshold": 0.85,
+
+    "embeddings": {
+      "mode": "local",
+
+      "local": {
+        "model": "Xenova/multilingual-e5-small",
+        "quantized": true,
+        "maxCacheSize": 1000
+      },
+
+      "api": {
+        "provider": "google",
+        "google": {
+          "model": "gemini-embedding-001",
+          "apiKey": "${GOOGLE_API_KEY}"
+        },
+        "nvidia": {
+          "model": "nvidia/nv-embed-v1",
+          "apiKey": "${NVIDIA_API_KEY}"
+        }
+      }
+    }
+  }
+}
+```
+
+#### 5.2.4 Vantagens de Cada Modo
+
+**Modo Local:**
+- ✅ Zero custo
+- ✅ Funciona offline
+- ✅ Privacidade total
+- ❌ Usa ~250MB RAM
+- ❌ Inferência mais lenta (CPU)
+
+**Modo API:**
+- ✅ Zero RAM
+- ✅ Maior precisão
+- ✅ Inferência rápida
+- ❌ Requer internet
+- ❌ Dados enviados à API
+- ❌ Limite de free tier
 
 ### 5.3 `rag.js` - Consultas Semânticas
 
@@ -516,7 +760,385 @@ const COMPILATION_TIMEOUT = 5000;
 
 ---
 
-## 7. LLM Layer
+## 7. Autonomy Layer (Voyager + OpenClaw)
+
+O bot possui comportamento proativo através de três subsistemas: **Curriculum Manager** (objetivos automáticos), **Idle Loop** (execução quando ocioso) e **Scheduler** (tarefas agendadas).
+
+### 7.1 `curriculum.js` - Gerenciador de Currículo
+
+**Inspirado no Voyager:** O bot avalia seu próprio estado e gera objetivos automaticamente.
+
+```javascript
+// Fases do currículo
+const CURRICULUM_PHASES = {
+  // Fase 1: Sobrevivência básica
+  survival: [
+    { skill: 'collect_wood', trigger: 'inventory.wood < 16', priority: 10 },
+    { skill: 'craft_tools', trigger: 'no_pickaxe && no_axe', priority: 9 },
+    { skill: 'find_food', trigger: 'food < 10', priority: 10 },
+    { skill: 'build_shelter', trigger: 'night_coming && no_shelter', priority: 8 }
+  ],
+
+  // Fase 2: Coleta de recursos
+  gathering: [
+    { skill: 'mine_stone', trigger: 'inventory.stone < 32', priority: 7 },
+    { skill: 'mine_iron', trigger: 'has_iron_pickaxe && inventory.iron < 16', priority: 6 },
+    { skill: 'smelt_ores', trigger: 'has_furnace && has_raw_ores', priority: 5 },
+    { skill: 'store_resources', trigger: 'inventory.full', priority: 8 }
+  ],
+
+  // Fase 3: Exploração
+  exploration: [
+    { skill: 'explore_chunk', trigger: 'unexplored_chunks_nearby', priority: 4 },
+    { skill: 'map_location', trigger: 'interesting_location_found', priority: 3 },
+    { skill: 'find_village', trigger: 'days > 1 && !found_village', priority: 3 },
+    { skill: 'discover_biomes', trigger: 'biomes_discovered < 5', priority: 2 }
+  ],
+
+  // Fase 4: Avançado
+  advanced: [
+    { skill: 'mine_diamonds', trigger: 'has_iron_pickaxe && inventory.diamond < 5', priority: 5 },
+    { skill: 'enchant_tools', trigger: 'has_enchanting_table && levels > 30', priority: 4 },
+    { skill: 'build_farm', trigger: 'has_farmland_nearby && !has_farm', priority: 3 }
+  ]
+};
+
+class CurriculumManager {
+  constructor(state, memory) {
+    this.state = state;
+    this.memory = memory;
+    this.currentPhase = 'survival';
+    this.learnedSkills = new Set();
+  }
+
+  // Determina fase atual baseado em progresso
+  getCurrentPhase() {
+    if (!this.hasBasicTools()) return 'survival';
+    if (this.needsGathering()) return 'gathering';
+    if (this.needsExploration()) return 'exploration';
+    return 'advanced';
+  }
+
+  // Retorna próximo objetivo autônomo
+  getNextGoal() {
+    const phase = this.getCurrentPhase();
+    const goals = CURRICULUM_PHASES[phase];
+
+    // Ordena por prioridade
+    const activeGoals = goals
+      .filter(g => this.evaluateTrigger(g.trigger))
+      .sort((a, b) => b.priority - a.priority);
+
+    if (activeGoals.length === 0) return null;
+
+    return activeGoals[0];
+  }
+
+  // Avalia condição de gatilho
+  evaluateTrigger(trigger) {
+    // Parser de expressões como 'inventory.wood < 16'
+    const inventory = this.state.getInventory();
+    const position = this.state.getPosition();
+    const worldState = this.state.getWorldState();
+
+    // Implementação do parser de triggers...
+    return evaluateTriggerExpression(trigger, { inventory, position, worldState });
+  }
+
+  // Marca skill como aprendida
+  markLearned(skillName) {
+    this.learnedSkills.add(skillName);
+  }
+}
+```
+
+### 7.2 `idle.js` - Idle Loop
+
+**Loop principal de autonomia:** Executado quando o bot está sem tarefas.
+
+```javascript
+class IdleLoop {
+  constructor(curriculum, scheduler, survivalMonitor, state) {
+    this.curriculum = curriculum;
+    this.scheduler = scheduler;
+    this.survival = survivalMonitor;
+    this.state = state;
+    this.idleTimeout = 30000; // 30 segundos
+    this.lastActivity = Date.now();
+  }
+
+  // Verifica se deve iniciar ação autônoma
+  async tick() {
+    // Ignora se ocupado
+    if (this.state.isBusy()) {
+      this.lastActivity = Date.now();
+      return;
+    }
+
+    // Verifica tempo idle
+    const idleTime = Date.now() - this.lastActivity;
+    if (idleTime < this.idleTimeout) return;
+
+    // 1. Verifica sobrevivência (prioridade máxima)
+    const survivalGoal = await this.survival.check();
+    if (survivalGoal) {
+      logger.info(`[Autonomia] Sobrevivência: ${survivalGoal.name}`);
+      await this.executeGoal(survivalGoal);
+      return;
+    }
+
+    // 2. Verifica tarefas agendadas
+    const scheduledTask = this.scheduler.getNextTask();
+    if (scheduledTask) {
+      logger.info(`[Autonomia] Agendada: ${scheduledTask.name}`);
+      await this.executeGoal(scheduledTask);
+      return;
+    }
+
+    // 3. Verifica currículo (Voyager)
+    const curriculumGoal = this.curriculum.getNextGoal();
+    if (curriculumGoal) {
+      logger.info(`[Autonomia] Currículo: ${curriculumGoal.skill}`);
+      await this.executeGoal(curriculumGoal);
+      return;
+    }
+
+    // Nada a fazer
+    logger.debug('[Autonomia] Nenhum objetivo ativo');
+  }
+
+  // Executa objetivo autônomo
+  async executeGoal(goal) {
+    try {
+      this.state.setTask({
+        type: goal.skill,
+        source: 'autonomous',
+        started: Date.now()
+      });
+
+      // Busca skill existente ou gera nova
+      const skill = await this.findOrGenerateSkill(goal);
+
+      if (skill) {
+        await skill.execute(this.state.bot, goal.params);
+        this.curriculum.markLearned(goal.skill);
+      }
+    } catch (error) {
+      logger.error(`[Autonomia] Falha em ${goal.skill}:`, error);
+    } finally {
+      this.state.clearTask();
+      this.lastActivity = Date.now();
+    }
+  }
+}
+```
+
+### 7.3 `scheduler.js` - Tarefas Agendadas (Cron)
+
+**Sistema OpenClaw-style:** Tarefas periódicas configuráveis.
+
+```javascript
+import cron from 'node-cron';
+
+const DEFAULT_SCHEDULED_TASKS = [
+  // Patrulha a base a cada 5 minutos
+  { name: 'patrol_base', cron: '*/5 * * * *', enabled: true },
+
+  // Colhe plantações ao amanhecer (Minecraft: tick 0)
+  { name: 'harvest_crops', cron: '0 6 * * *', enabled: true },
+
+  // Verifica baús a cada 30 minutos
+  { name: 'check_chests', cron: '*/30 * * * *', enabled: true },
+
+  // Organiza inventário quando cheio
+  { name: 'organize_inventory', cron: '*/10 * * * *', enabled: true },
+
+  // Explora novos chunks a cada 15 minutos (se idle)
+  { name: 'explore_chunks', cron: '*/15 * * * *', enabled: true }
+];
+
+class TaskScheduler {
+  constructor(state, skills) {
+    this.state = state;
+    this.skills = skills;
+    this.scheduledJobs = new Map();
+    this.tasks = [];
+  }
+
+  // Carrega tarefas da configuração
+  loadFromConfig(config) {
+    this.tasks = config.autonomy?.scheduledTasks || DEFAULT_SCHEDULED_TASKS;
+  }
+
+  // Inicia todas as tarefas agendadas
+  start() {
+    for (const task of this.tasks) {
+      if (task.enabled) {
+        this.schedule(task);
+      }
+    }
+    logger.info(`[Scheduler] ${this.scheduledJobs.size} tarefas agendadas`);
+  }
+
+  // Agenda uma tarefa
+  schedule(task) {
+    const job = cron.schedule(task.cron, async () => {
+      // Só executa se bot estiver idle
+      if (!this.state.isBusy()) {
+        logger.info(`[Scheduler] Executando: ${task.name}`);
+        await this.executeScheduledTask(task);
+      }
+    });
+
+    this.scheduledJobs.set(task.name, job);
+  }
+
+  // Para uma tarefa
+  stop(taskName) {
+    const job = this.scheduledJobs.get(taskName);
+    if (job) {
+      job.stop();
+      this.scheduledJobs.delete(taskName);
+    }
+  }
+
+  // Para todas as tarefas
+  stopAll() {
+    for (const [name, job] of this.scheduledJobs) {
+      job.stop();
+    }
+    this.scheduledJobs.clear();
+  }
+}
+```
+
+### 7.4 `survival.js` - Monitor de Sobrevivência
+
+**Prioridade máxima:** O bot sempre verifica sobrevivência antes de qualquer ação autônoma.
+
+```javascript
+class SurvivalMonitor {
+  constructor(bot, state, config) {
+    this.bot = bot;
+    this.state = state;
+    this.thresholds = config.autonomy?.survival || {
+      minFood: 10,
+      minHealth: 10,
+      maxDanger: 3 // número de mobs hostis próximos
+    };
+  }
+
+  // Verifica condições de sobrevivência
+  async check() {
+    const food = this.bot.food;
+    const health = this.bot.health;
+    const nearbyHostiles = this.countHostileMobs();
+
+    // Fome crítica
+    if (food < this.thresholds.minFood) {
+      return {
+        skill: 'find_food',
+        priority: 10,
+        reason: `Fome crítica: ${food}/20`,
+        params: { minFood: this.thresholds.minFood }
+      };
+    }
+
+    // Vida crítica
+    if (health < this.thresholds.minHealth) {
+      return {
+        skill: 'regenerate',
+        priority: 10,
+        reason: `Vida crítica: ${health}/20`,
+        params: { minHealth: this.thresholds.minHealth }
+      };
+    }
+
+    // Perigo próximo
+    if (nearbyHostiles > this.thresholds.maxDanger) {
+      return {
+        skill: 'escape_danger',
+        priority: 10,
+        reason: `${nearbyHostiles} mobs hostis próximos`,
+        params: { hostiles: nearbyHostiles }
+      };
+    }
+
+    // Tudo ok
+    return null;
+  }
+
+  // Conta mobs hostis próximos
+  countHostileMobs() {
+    const entities = Object.values(this.bot.entities);
+    const hostiles = ['zombie', 'skeleton', 'creeper', 'spider', 'enderman'];
+
+    return entities.filter(e =>
+      hostiles.some(h => e.name?.includes(h)) &&
+      e.position.distanceTo(this.bot.entity.position) < 20
+    ).length;
+  }
+}
+```
+
+### 7.5 Configuração de Autonomia
+
+```json
+{
+  "autonomy": {
+    "enabled": true,
+    "idleTimeout": 30000,
+
+    "survival": {
+      "minFood": 10,
+      "minHealth": 10,
+      "maxDanger": 3
+    },
+
+    "curriculum": {
+      "enabled": true,
+      "phases": ["survival", "gathering", "exploration", "advanced"],
+      "autoProgress": true
+    },
+
+    "scheduledTasks": [
+      { "name": "patrol_base", "cron": "*/5 * * * *", "enabled": true },
+      { "name": "harvest_crops", "cron": "0 6 * * *", "enabled": true },
+      { "name": "check_chests", "cron": "*/30 * * * *", "enabled": true },
+      { "name": "organize_inventory", "cron": "*/10 * * * *", "enabled": true },
+      { "name": "explore_chunks", "cron": "*/15 * * * *", "enabled": true }
+    ],
+
+    "rules": [
+      "Manter inventário organizado",
+      "Guardar itens valiosos no baú",
+      "Não minerar em áreas protegidas",
+      "Fugir de creepers"
+    ]
+  }
+}
+```
+
+### 7.6 Diretório Atualizado
+
+```
+src/
+├── core/
+│   ├── bot.js
+│   ├── ooda.js
+│   ├── commands.js
+│   ├── state.js
+│   ├── curriculum.js      # NOVO: Gerenciador de currículo
+│   ├── idle.js            # NOVO: Loop de autonomia
+│   ├── scheduler.js       # NOVO: Tarefas agendadas (cron)
+│   └── survival.js        # NOVO: Monitor de sobrevivência
+│
+├── ... (resto da estrutura)
+```
+
+---
+
+## 8. LLM Layer
 
 ### 7.1 Providers Suportados
 
@@ -858,6 +1480,7 @@ function handleCorruptedSkill(filePath, error) {
     "@google/generative-ai": "^0.1.0",
     "openai": "^4.0.0",
     "isolated-vm": "^4.0.0",
+    "node-cron": "^3.0.0",
     "uuid": "^9.0.0",
     "dotenv": "^16.0.0"
   },
@@ -1030,12 +1653,28 @@ Após aprovação deste design:
 1. **Criar plano de implementação** (via writing-plans skill)
 2. **Setup inicial do projeto** (npm init, dependências)
 3. **Implementar Core Layer** (bot.js, state.js, commands.js)
-4. **Implementar Memory Layer** (database, embeddings, RAG)
-5. **Implementar LLM Layer** (providers, router)
-6. **Implementar Skills Base** (walk, mine, collect, etc.)
-7. **Implementar Skills Executor** (sandbox)
-8. **Testes integrados**
-9. **Documentação de uso**
+4. **Implementar Autonomy Layer** (curriculum.js, idle.js, scheduler.js, survival.js)
+5. **Implementar Memory Layer** (database, embeddings híbrido, RAG)
+6. **Implementar LLM Layer** (providers, router)
+7. **Implementar Skills Base** (walk, mine, collect, escape, find_food, explore, etc.)
+8. **Implementar Skills Executor** (sandbox + validação)
+9. **Testes integrados**
+10. **Documentação de uso**
+
+---
+
+## 17. Resumo de Componentes
+
+| Componente | Status | Prioridade |
+|------------|--------|------------|
+| Core Layer | Definido | Alta |
+| Autonomy Layer (Voyager) | Definido | Alta |
+| Memory Layer (Híbrido) | Definido | Alta |
+| Skills Layer | Definido | Alta |
+| LLM Layer (Multi-provider) | Definido | Alta |
+| Utils Layer | Definido | Média |
+| Gerenciamento de Custos | Definido | Média |
+| Dependências Nativas | Documentado | Baixa |
 
 ---
 
