@@ -13,6 +13,9 @@
  */
 class CommandParser {
   constructor(identity) {
+    if (!identity || typeof identity.isForMe !== 'function' || typeof identity.parseCommand !== 'function') {
+      throw new Error('CommandParser requires identity with isForMe and parseCommand methods');
+    }
     this.identity = identity;
   }
 
@@ -126,13 +129,10 @@ class CommandParser {
       }
     }
 
-    // Player mention
-    const playerMatch = text.match(/@?(\w+)/);
-    if (playerMatch && playerMatch[1] !== parsed.intent) {
-      // Check if it's a valid player name pattern
-      if (/^[a-zA-Z0-9_]{3,16}$/.test(playerMatch[1])) {
-        parsed.targetPlayer = playerMatch[1];
-      }
+    // Player mention - specifically look for @ mentions
+    const playerMatch = text.match(/@(\w+)/);
+    if (playerMatch && /^[a-zA-Z0-9_]{3,16}$/.test(playerMatch[1])) {
+      parsed.targetPlayer = playerMatch[1];
     }
   }
 

@@ -183,4 +183,41 @@ describe('CommandParser', () => {
       expect(aliases).toContain('minerar');
     });
   });
+
+  describe('extractPatterns', () => {
+    it('should extract @ mentioned player', () => {
+      const result = parser.parse('Player', '!follow @Steve');
+      expect(result.targetPlayer).toBe('steve');
+    });
+
+    it('should not match first word as player mention', () => {
+      const result = parser.parse('Player', '!come here @Alex');
+      expect(result.intent).toBe('come');
+      expect(result.targetPlayer).toBe('alex');
+    });
+
+    it('should extract valid player names only', () => {
+      const result = parser.parse('Player', '!follow @ab');  // Too short (2 chars)
+      expect(result.targetPlayer).toBeUndefined();
+    });
+
+    it('should handle multiple @ mentions and use first one', () => {
+      const result = parser.parse('Player', '!follow @Steve @Alex');
+      expect(result.targetPlayer).toBe('steve');
+    });
+  });
+
+  describe('constructor validation', () => {
+    it('should throw error when identity is null', () => {
+      expect(() => new CommandParser(null)).toThrow('CommandParser requires identity with isForMe and parseCommand methods');
+    });
+
+    it('should throw error when identity is missing isForMe', () => {
+      expect(() => new CommandParser({ parseCommand: () => {} })).toThrow('CommandParser requires identity with isForMe and parseCommand methods');
+    });
+
+    it('should throw error when identity is missing parseCommand', () => {
+      expect(() => new CommandParser({ isForMe: () => {} })).toThrow('CommandParser requires identity with isForMe and parseCommand methods');
+    });
+  });
 });
