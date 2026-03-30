@@ -7,12 +7,14 @@ node_modules/
 .env.production
 
 # Data
-data/
+data/*
+!data/.gitkeep
 *.db
 *.db-journal
 
 # Logs
-logs/
+logs/*
+!logs/.gitkeep
 *.log
 
 # IDE
