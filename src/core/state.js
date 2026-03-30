@@ -54,6 +54,7 @@ class StateManager extends EventEmitter {
 
     this.currentTask = {
       ...task,
+      timeout: timeout,
       started: Date.now()
     };
     this.taskStartedAt = Date.now();

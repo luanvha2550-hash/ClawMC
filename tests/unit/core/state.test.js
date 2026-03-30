@@ -46,6 +46,11 @@ describe('StateManager', () => {
       expect(state.currentTask.type).toBe('crafting');
       expect(state.currentTask).not.toBe(firstTask);
     });
+
+    it('should store timeout in task object', () => {
+      state.setTask({ type: 'mining' }, 30000);
+      expect(state.currentTask.timeout).toBe(30000);
+    });
   });
 
   describe('clearTask', () => {
