@@ -256,6 +256,35 @@ describe('ReconnectionManager', () => {
       // Should have scheduled a retry
       expect(manager.attempts).toBeGreaterThan(0);
     });
+
+    it('should re-register event handlers after reconnection', async () => {
+      manager.attempts = 3;
+      manager.isReconnecting = false;
+
+      const mockNewBot = {
+        once: jest.fn((event, callback) => {
+          if (event === 'spawn') {
+            callback();
+          }
+        }),
+        on: jest.fn()
+      };
+      mockCreateBot.mockReturnValue(mockNewBot);
+
+      // Initialize manager to register initial handlers
+      manager.init();
+      mockBot.on.mockClear();
+
+      await manager.reconnect('test');
+
+      // Verify init() was called to re-register handlers on new bot
+      expect(mockBot.on).toHaveBeenCalled();
+      expect(mockBot.on).toHaveBeenCalledWith('end', expect.any(Function));
+      expect(mockBot.on).toHaveBeenCalledWith('kicked', expect.any(Function));
+      expect(mockBot.on).toHaveBeenCalledWith('error', expect.any(Function));
+      expect(mockBot.on).toHaveBeenCalledWith('spawn', expect.any(Function));
+      expect(manager.attempts).toBe(0);
+    });
   });
 
   describe('forceReconnect', () => {

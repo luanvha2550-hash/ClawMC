@@ -130,6 +130,9 @@ class ReconnectionManager {
       // Update bot reference
       Object.assign(this.bot, newBot);
 
+      // Re-register event handlers on new bot instance
+      this.init();
+
       // Restore state
       await this.robustness?.restoreFromCheckpoint();
 
