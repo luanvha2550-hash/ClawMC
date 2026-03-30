@@ -1,0 +1,143 @@
+{
+  "server": {
+    "host": "${SERVER_HOST}",
+    "port": "${SERVER_PORT}",
+    "version": "${SERVER_VERSION}",
+    "auth": "offline"
+  },
+
+  "bot": {
+    "identity": {
+      "name": "${BOT_NAME}",
+      "displayName": "Alpha",
+      "owner": "${BOT_OWNER}",
+      "ownerNickname": null,
+      "role": "assistant"
+    },
+    "response": {
+      "mode": "auto",
+      "defaultPrefix": "!",
+      "mentionPrefix": true,
+      "ownerPrivilege": true
+    },
+    "taskTimeout": 1800000,
+    "reconnectDelay": 5000,
+    "maxReconnectAttempts": 10
+  },
+
+  "llm": {
+    "mode": "single",
+    "model": "gemini-3.1-flash-lite-preview",
+    "primary": {
+      "type": "google",
+      "model": "gemini-3.1-flash-lite-preview",
+      "apiKey": "${GOOGLE_API_KEY}"
+    },
+    "secondary": {
+      "type": "openrouter",
+      "model": "stepfun/step-3.5-flash:free",
+      "apiKey": "${OPENROUTER_API_KEY}"
+    },
+    "codeModel": {
+      "type": "nvidia",
+      "model": "deepseek-ai/deepseek-v3",
+      "apiKey": "${NVIDIA_API_KEY}"
+    },
+    "maxFailures": 5,
+    "cooldownMs": 60000,
+    "temperature": {
+      "chat": 0.7,
+      "code": 0.3
+    }
+  },
+
+  "memory": {
+    "dbPath": "./data/brain.db",
+    "mode": "local",
+    "embeddingModel": "Xenova/multilingual-e5-small",
+    "similarityThreshold": 0.85,
+    "maxCacheSize": 500
+  },
+
+  "skills": {
+    "maxAttempts": 3,
+    "escalationThreshold": 2,
+    "executionTimeout": 30000,
+    "logFailures": true
+  },
+
+  "autonomy": {
+    "enabled": true,
+    "idleTimeout": 30000,
+    "survival": {
+      "minFood": 10,
+      "minHealth": 10,
+      "maxDanger": 3
+    },
+    "curriculum": {
+      "enabled": true,
+      "phases": ["survival", "gathering", "exploration", "advanced"],
+      "autoProgress": true
+    },
+    "scheduledTasks": [
+      { "name": "patrol_base", "cron": "*/5 * * * *", "enabled": true },
+      { "name": "check_chests", "cron": "*/30 * * * *", "enabled": true }
+    ]
+  },
+
+  "community": {
+    "enabled": false,
+    "name": "Vila dos Bots",
+    "sharedSecret": "${COMMUNITY_SECRET}",
+    "discovery": {
+      "autoAnnounce": true,
+      "peerTimeout": 120000
+    }
+  },
+
+  "robustness": {
+    "enabled": true,
+    "logDir": "./logs",
+    "logLevel": "INFO",
+    "checkpointInterval": 300000,
+    "autoRecover": true,
+    "deathRecovery": {
+      "enabled": true,
+      "autoRecover": true,
+      "recoverBody": true,
+      "maxDeathAttempts": 3,
+      "deathCooldown": 30000
+    },
+    "stuckDetection": {
+      "enabled": true,
+      "positionCheckInterval": 5000,
+      "stuckThreshold": 3,
+      "maxStuckTime": 120000
+    },
+    "alerts": {
+      "memoryHighThreshold": 85,
+      "memoryCriticalThreshold": 91,
+      "llmErrorRateThreshold": 20,
+      "skillFailureRateThreshold": 30,
+      "taskStuckTime": 1800000
+    }
+  },
+
+  "logging": {
+    "level": "info",
+    "logDir": "./logs",
+    "maxFileSize": 10485760,
+    "maxFiles": 7
+  },
+
+  "telemetry": {
+    "enabled": false,
+    "endpoint": "${TELEMETRY_ENDPOINT}",
+    "apiKey": "${TELEMETRY_API_KEY}"
+  },
+
+  "healthServer": {
+    "enabled": true,
+    "port": 8080
+  }
+}

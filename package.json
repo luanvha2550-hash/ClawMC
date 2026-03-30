@@ -1,0 +1,39 @@
+{
+  "name": "clawmc",
+  "version": "0.1.0",
+  "description": "Bot de Minecraft autônomo com IA",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/",
+    "db:migrate": "node scripts/migrate.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.14.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-collectblock": "^1.4.1",
+    "better-sqlite3": "^9.4.3",
+    "sqlite-vec": "^0.1.7",
+    "@huggingface/transformers": "^3.0.0",
+    "openai": "^4.28.0",
+    "node-cron": "^3.0.3",
+    "uuid": "^9.0.1",
+    "dotenv": "^16.4.5",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "eslint": "^8.57.0"
+  },
+  "optionalDependencies": {
+    "isolated-vm": "^4.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
