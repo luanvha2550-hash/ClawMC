@@ -3,6 +3,7 @@
 
 /**
  * Wraps a promise with a timeout, rejecting if timeout is reached first.
+ * Properly clears the timeout to prevent memory leaks.
  *
  * @param {Promise} promise - The promise to wrap
  * @param {number} timeoutMs - Timeout in milliseconds
@@ -12,13 +13,35 @@
 export async function withTimeout(promise, timeoutMs, errorMessage) {
   const message = errorMessage || `Operation timed out after ${timeoutMs}ms`;
 
+  let timeoutId;
   const timeoutPromise = new Promise((_, reject) => {
-    setTimeout(() => {
+    timeoutId = setTimeout(() => {
       reject(new Error(message));
     }, timeoutMs);
   });
 
-  return Promise.race([promise, timeoutPromise]);
+  try {
+    const result = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timeoutId);
+    return result;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
+/**
+ * Calculate the Euclidean distance between two positions.
+ *
+ * @param {Object} pos1 - First position with x, y, z properties
+ * @param {Object} pos2 - Second position with x, y, z properties
+ * @returns {number} The distance between the two positions
+ */
+export function distanceBetween(pos1, pos2) {
+  const dx = pos1.x - pos2.x;
+  const dy = pos1.y - pos2.y;
+  const dz = pos1.z - pos2.z;
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 /**
@@ -33,5 +56,6 @@ export function createNavigationTimeoutError(timeoutMs) {
 
 export default {
   withTimeout,
+  distanceBetween,
   createNavigationTimeoutError
 };

@@ -3,7 +3,7 @@
 
 import { GoalNear } from 'mineflayer-pathfinder';
 import { getLogger } from '../../utils/logger.js';
-import { withTimeout } from '../utils/navigation.js';
+import { withTimeout, distanceBetween } from '../utils/navigation.js';
 
 const logger = getLogger().module('CollectSkill');
 
@@ -71,10 +71,7 @@ async function execute(bot, state, params) {
 
       // Check distance
       if (!entity.position) return false;
-      const dx = entity.position.x - botPos.x;
-      const dy = entity.position.y - botPos.y;
-      const dz = entity.position.z - botPos.z;
-      const distance = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const distance = distanceBetween(entity.position, botPos);
 
       if (distance > range) return false;
 
