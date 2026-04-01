@@ -3,6 +3,7 @@
 
 import { GoalNear } from 'mineflayer-pathfinder';
 import { getLogger } from '../../utils/logger.js';
+import { withTimeout } from '../utils/navigation.js';
 
 const logger = getLogger().module('ComeSkill');
 
@@ -80,18 +81,12 @@ async function execute(bot, state, params) {
     // Create GoalNear - get within range of the player
     const goal = new GoalNear(targetX, targetY, targetZ, range);
 
-    // Set up timeout
-    const timeoutPromise = new Promise((_, reject) => {
-      setTimeout(() => {
-        reject(new Error(`Navigation timeout after ${timeout}ms`));
-      }, timeout);
-    });
-
-    // Execute navigation
-    const navigationPromise = bot.pathfinder.goto(goal);
-
-    // Race between navigation and timeout
-    await Promise.race([navigationPromise, timeoutPromise]);
+    // Execute navigation with timeout
+    await withTimeout(
+      bot.pathfinder.goto(goal),
+      timeout,
+      `Navigation timeout after ${timeout}ms`
+    );
 
     // Get final position
     const position = state.getPosition();

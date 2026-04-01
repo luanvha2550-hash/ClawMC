@@ -59,13 +59,21 @@ async function execute(bot, state, params) {
   logger.info(`Starting to follow '${username}'`, { distance, interval });
 
   // Helper function to update follow target
-  const updateFollow = async () => {
+  const updateFollow = async (intervalRef) => {
     try {
       // Check if player still exists
       const player = bot.players[username];
 
       if (!player || !player.entity || !player.entity.position) {
         logger.warn(`Player '${username}' no longer visible, stopping follow`);
+        // Clear the interval to prevent resource leak
+        if (intervalRef) {
+          clearInterval(intervalRef);
+        }
+        // Clear state reference
+        if (state.followInterval === intervalRef) {
+          state.followInterval = null;
+        }
         state.clearFollowing();
         return;
       }
@@ -120,10 +128,14 @@ async function execute(bot, state, params) {
     // Check if still following
     if (!state.following || state.following !== username) {
       clearInterval(followInterval);
+      // Clear state reference if it matches
+      if (state.followInterval === followInterval) {
+        state.followInterval = null;
+      }
       return;
     }
 
-    await updateFollow();
+    await updateFollow(followInterval);
   }, interval);
 
   // Store interval reference in state for stop skill
