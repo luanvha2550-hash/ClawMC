@@ -7,6 +7,12 @@ import { join } from 'path';
 
 const logger = getLogger().module('SkillRegistry');
 
+// Confidence scores for skill matching
+const CONFIDENCE = {
+  NAME_MATCH: 0.9,
+  DESCRIPTION_MATCH: 0.7
+};
+
 /**
  * SkillRegistry
  *
@@ -156,7 +162,7 @@ class SkillRegistry {
       if (nameMatch || descMatch) {
         matches.push({
           skill,
-          confidence: nameMatch ? 0.9 : 0.7
+          confidence: nameMatch ? CONFIDENCE.NAME_MATCH : CONFIDENCE.DESCRIPTION_MATCH
         });
       }
     }
@@ -167,6 +173,11 @@ class SkillRegistry {
 
   /**
    * Load base skills from a directory
+   *
+   * SECURITY: This method dynamically imports modules from the filesystem.
+   * The skillsDir parameter is expected to be a trusted directory path.
+   * Skills directories should only contain verified, trusted skill modules.
+   * Do NOT load skills from user-controlled or untrusted locations.
    * @param {string} skillsDir - Directory containing skill modules
    * @returns {Promise<number>} Number of skills loaded
    */
@@ -265,6 +276,14 @@ export function getSkillRegistry() {
     instance = new SkillRegistry();
   }
   return instance;
+}
+
+/**
+ * Reset the singleton instance (for testing)
+ * This clears the singleton instance, allowing tests to create fresh instances.
+ */
+export function resetSkillRegistry() {
+  instance = null;
 }
 
 export { SkillRegistry };
