@@ -372,13 +372,15 @@ class SkillExecutor {
       }
     }
 
-    // Add position shortcut
-    Object.defineProperty(proxy, 'position', {
-      get() {
-        return bot.entity?.position || { x: 0, y: 0, z: 0 };
-      },
-      enumerable: true
-    });
+    // Add position shortcut if not already defined
+    if (!Object.prototype.hasOwnProperty.call(proxy, 'position')) {
+      Object.defineProperty(proxy, 'position', {
+        get() {
+          return bot.entity?.position || { x: 0, y: 0, z: 0 };
+        },
+        enumerable: true
+      });
+    }
 
     // Freeze to prevent modifications
     return Object.freeze(proxy);
