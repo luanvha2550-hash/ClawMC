@@ -158,6 +158,20 @@ class SkillExecutor {
     const timeout = options.timeout || this.config.skillTimeout;
     const executionId = ++this.executionId;
 
+    // Validate bot instance
+    if (!bot) {
+      const error = 'Bot instance is required';
+      logger.error(error);
+      return { success: false, error, executionId };
+    }
+
+    // Validate state instance
+    if (!state) {
+      const error = 'State instance is required';
+      logger.error(error);
+      return { success: false, error, executionId };
+    }
+
     // Validate skill
     if (!skill || typeof skill.execute !== 'function') {
       const error = 'Invalid skill: missing execute function';
