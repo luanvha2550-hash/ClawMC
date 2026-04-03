@@ -51,16 +51,27 @@ async function execute(bot, state, params) {
   // Clear any existing follow interval
   if (state.followInterval) {
     clearInterval(state.followInterval);
+    state.followInterval = null;
   }
 
   // Set following state
   state.setFollowing(username);
 
+  // Track navigation state to prevent race conditions
+  state.followNavigating = false;
+
   logger.info(`Starting to follow '${username}'`, { distance, interval });
 
   // Helper function to update follow target
   const updateFollow = async (intervalRef) => {
+    // Prevent race conditions - skip if already navigating
+    if (state.followNavigating) {
+      return;
+    }
+
     try {
+      state.followNavigating = true;
+
       // Check if player still exists
       const player = bot.players[username];
 
@@ -75,6 +86,7 @@ async function execute(bot, state, params) {
           state.followInterval = null;
         }
         state.clearFollowing();
+        state.followNavigating = false;
         return;
       }
 
@@ -92,6 +104,8 @@ async function execute(bot, state, params) {
     } catch (error) {
       // Log error but don't stop following - player might just be temporarily unavailable
       logger.warn(`Follow update error: ${error.message}`);
+    } finally {
+      state.followNavigating = false;
     }
   };
 
@@ -135,11 +149,35 @@ async function execute(bot, state, params) {
       return;
     }
 
+    // Check if bot is still connected
+    if (!bot.entity) {
+      logger.warn('Bot disconnected, clearing follow interval');
+      clearInterval(followInterval);
+      state.followInterval = null;
+      state.clearFollowing();
+      return;
+    }
+
     await updateFollow(followInterval);
   }, interval);
 
   // Store interval reference in state for stop skill
   state.followInterval = followInterval;
+
+  // Set up cleanup on bot disconnect
+  const cleanupOnDisconnect = () => {
+    if (state.followInterval) {
+      clearInterval(state.followInterval);
+      state.followInterval = null;
+    }
+    state.clearFollowing();
+    logger.info('Follow cleaned up on bot disconnect');
+  };
+
+  // Listen for end event (cleanup)
+  if (bot.once) {
+    bot.once('end', cleanupOnDisconnect);
+  }
 
   logger.info(`Now following '${username}'`);
   return {

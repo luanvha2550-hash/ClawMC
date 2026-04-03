@@ -50,6 +50,7 @@ class CurriculumManager {
     // Time tracking
     this.timeOfDay = 0;
     this.dayCount = 0;
+    this.nightCounted = false; // Track if current night was already counted
 
     // Phase progress
     this.phaseProgress = {
@@ -154,7 +155,7 @@ class CurriculumManager {
     const position = this.state.getPosition?.() || { x: 0, y: 64, z: 0 };
 
     // Simple trigger evaluation
-    // Format: "condition" with && and || operators
+    // Format: "condition" with && and || operators (no nested parentheses)
 
     const conditions = {
       'inventory.wood < 16': () => this.countItem(inventory, 'wood') < 16,
@@ -163,22 +164,41 @@ class CurriculumManager {
       'no_pickaxe': () => !this.hasItem(inventory, 'pickaxe'),
       'no_axe': () => !this.hasItem(inventory, 'axe'),
       'has_iron_pickaxe': () => this.hasItem(inventory, 'iron_pickaxe'),
+      'has_furnace': () => this.hasItem(inventory, 'furnace'),
+      'has_raw_ores': () => this.countItem(inventory, 'raw_iron') > 0 || this.countItem(inventory, 'raw_copper') > 0,
       'food < 10': () => (this.state.getVitals?.()?.food || 20) < 10,
       'night_coming': () => this.timeOfDay > 11000,
       'no_shelter': () => !this.state.hasShelter?.(),
-      'inventory.full': () => this.isInventoryFull(inventory)
+      'inventory.full': () => this.isInventoryFull(inventory),
+      'days > 1': () => this.dayCount > 1,
+      '!found_village': () => !this.learnedSkills.has('find_village'),
+      'unexplored_chunks_nearby': () => true, // Placeholder
+      'interesting_location_found': () => false, // Placeholder
+      'biomes_discovered < 5': () => (this.memory?.getFacts?.('biome')?.length || 0) < 5,
+      'has_enchanting_table': () => this.hasItem(inventory, 'enchanting_table'),
+      'levels > 30': () => (this.bot?.experience?.level || 0) > 30,
+      'has_farmland_nearby': () => false, // Placeholder
+      '!has_farm': () => !this.learnedSkills.has('build_farm'),
+      'has_iron_pickaxe && inventory.diamond < 5': () =>
+        this.hasItem(inventory, 'iron_pickaxe') && this.countItem(inventory, 'diamond') < 5
     };
 
-    // Simple evaluation
+    // Direct match
     if (conditions[trigger]) {
-      return conditions[trigger]();
+      try {
+        return conditions[trigger]();
+      } catch (error) {
+        logger.warn(`[Curriculum] Trigger evaluation error: ${trigger}`);
+        return false;
+      }
     }
 
-    // Complex evaluation with && and ||
+    // Complex evaluation with && (no parentheses support)
     if (trigger.includes('&&')) {
       return trigger.split('&&').every(t => this.evaluateTrigger(t.trim()));
     }
 
+    // Complex evaluation with || (no parentheses support)
     if (trigger.includes('||')) {
       return trigger.split('||').some(t => this.evaluateTrigger(t.trim()));
     }
@@ -209,8 +229,13 @@ class CurriculumManager {
    * Check if inventory is full
    */
   isInventoryFull(inventory) {
-    // Assume 36 slots
-    return inventory.length >= 36;
+    // Minecraft has 36 inventory slots (9 hotbar + 27 main)
+    // Count actual filled slots, not unique item types
+    const filledSlots = inventory.reduce((sum, item) => {
+      // Each stack counts as 1 slot
+      return sum + 1;
+    }, 0);
+    return filledSlots >= 36;
   }
 
   /**
@@ -265,13 +290,17 @@ class CurriculumManager {
    * Set time of day (for circadian events)
    */
   setTimeOfDay(time) {
-    const wasDay = this.timeOfDay < 12000;
     this.timeOfDay = time;
-    const isDay = time < 12000;
+    const isNight = time >= 12000;
 
-    if (wasDay && !isDay) {
+    if (isNight && !this.nightCounted) {
+      // Transition to night - count the day
       this.dayCount++;
+      this.nightCounted = true;
       logger.debug(`[Curriculum] Night ${this.dayCount}`);
+    } else if (!isNight && this.nightCounted) {
+      // New day started - reset the flag
+      this.nightCounted = false;
     }
   }
 

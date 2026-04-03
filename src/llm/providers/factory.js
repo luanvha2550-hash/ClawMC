@@ -11,7 +11,11 @@ class ProviderFactory {
    * Create a provider instance
    */
   static create(config) {
-    const type = config.type?.toLowerCase();
+    if (!config || !config.type) {
+      throw new Error('Provider config must include type');
+    }
+
+    const type = config.type.toLowerCase();
 
     switch (type) {
       case 'google':

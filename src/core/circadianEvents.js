@@ -11,11 +11,24 @@ class CircadianEvents {
   constructor(bot) {
     this.bot = bot;
     this.lastDayTime = null;
+    this.timeHandler = null;
 
     // Listen for time changes
     if (this.bot.on) {
-      this.bot.on('time', () => this.checkTimeEvents());
+      this.timeHandler = () => this.checkTimeEvents();
+      this.bot.on('time', this.timeHandler);
     }
+  }
+
+  /**
+   * Destroy - Clean up event listener
+   */
+  destroy() {
+    if (this.timeHandler && this.bot.off) {
+      this.bot.off('time', this.timeHandler);
+      this.timeHandler = null;
+    }
+    logger.debug('[Circadian] Destroyed');
   }
 
   /**

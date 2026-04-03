@@ -104,16 +104,19 @@ class SemanticSnapshot {
    * Get nearby entities
    */
   getNearbyEntities(range) {
+    const botPos = this.bot?.entity?.position;
+    if (!botPos) return [];
+
     const entities = Object.values(this.bot?.entities || {});
     const relevant = ['player', 'zombie', 'skeleton', 'creeper', 'cow', 'pig', 'sheep', 'villager'];
 
     const nearby = entities
-      .filter(e => e.position?.distanceTo?.(this.bot.entity.position) < range)
+      .filter(e => e.position?.distanceTo?.(botPos) < range)
       .filter(e => relevant.some(r => e.name?.includes(r)))
       .slice(0, 10)
       .map(e => ({
         type: e.name,
-        distance: Math.round(e.position.distanceTo(this.bot.entity.position)),
+        distance: Math.round(e.position.distanceTo(botPos)),
         position: {
           x: Math.round(e.position.x),
           y: Math.round(e.position.y),
