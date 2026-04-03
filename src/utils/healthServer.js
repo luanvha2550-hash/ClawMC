@@ -222,7 +222,7 @@ class HealthServer {
     const MB = 1024 * 1024;
 
     return {
-      status: usage.heapUsed / usage.heapTotal < 0.91 ? 'healthy' : 'warning',
+      status: usage.heapUsed / usage.heapTotal < 0.91 ? 'healthy' : 'degraded',
       heapUsedMB: Math.round(usage.heapUsed / MB),
       heapTotalMB: Math.round(usage.heapTotal / MB),
       rssMB: Math.round(usage.rss / MB)
