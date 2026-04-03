@@ -34,9 +34,36 @@ src/
 
 ## Instalação
 
+### Método Rápido (Recomendado)
+
 ```bash
 # Clone o repositório
-git clone https://github.com/user/ClawMC.git
+git clone https://github.com/luanvha2550-hash/ClawMC.git
+cd ClawMC
+
+# Instale dependências
+npm install
+
+# Execute o assistente de configuração
+npm run setup
+
+# Inicie o bot
+npm start
+```
+
+O assistente de configuração (`npm run setup`) vai guiá-lo por:
+- Nome do bot e dono
+- IP e porta do servidor Minecraft
+- Provedor e modelo LLM (Google, OpenAI, Ollama, etc.)
+- API keys necessárias
+- Modo de embeddings (local ou API)
+- Configuração multi-bot
+
+### Método Manual
+
+```bash
+# Clone o repositório
+git clone https://github.com/luanvha2550-hash/ClawMC.git
 cd ClawMC
 
 # Instale dependências
