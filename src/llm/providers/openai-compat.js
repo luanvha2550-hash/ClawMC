@@ -141,19 +141,25 @@ class OpenAICompatProvider {
     const url = `${this.baseUrl}/embeddings`;
     const body = { model: this.model, input: text };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: this.getHeaders(),
-      body: JSON.stringify(body)
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(body)
+      });
 
-    const data = await response.json();
+      const data = await response.json();
 
-    if (!response.ok) {
-      throw new Error(data.error?.message || 'Embedding failed');
+      if (!response.ok) {
+        throw new Error(data.error?.message || 'Embedding failed');
+      }
+
+      return data.data?.[0]?.embedding || [];
+
+    } catch (error) {
+      logger.error(`${this.type} embedding failed: ${error.message}`);
+      throw error;
     }
-
-    return data.data?.[0]?.embedding || [];
   }
 
   /**
@@ -163,19 +169,25 @@ class OpenAICompatProvider {
     const url = `${this.baseUrl.replace('/v1', '')}/api/embeddings`;
     const body = { model: this.model, prompt: text };
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
 
-    const data = await response.json();
+      const data = await response.json();
 
-    if (!response.ok) {
-      throw new Error('Ollama embedding failed');
+      if (!response.ok) {
+        throw new Error('Ollama embedding failed');
+      }
+
+      return data.embedding || [];
+
+    } catch (error) {
+      logger.error(`Ollama embedding failed: ${error.message}`);
+      throw error;
     }
-
-    return data.embedding || [];
   }
 }
 

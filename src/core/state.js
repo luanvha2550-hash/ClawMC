@@ -180,6 +180,17 @@ class StateManager extends EventEmitter {
   }
 
   /**
+   * Check if bot has shelter (placeholder - needs integration)
+   * @returns {boolean} - True if bot has shelter
+   */
+  hasShelter() {
+    // This is a placeholder that should be integrated with
+    // the memory system to track built shelters
+    // For now, return false to allow curriculum progression
+    return false;
+  }
+
+  /**
    * Handle death
    */
   handleDeath() {

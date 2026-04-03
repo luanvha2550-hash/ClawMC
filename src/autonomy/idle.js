@@ -18,49 +18,60 @@ class IdleLoop {
     this.lastActivity = Date.now();
     this.isRunning = false;
     this.intervalId = null;
+    this.isTicking = false; // Mutex to prevent concurrent tick() calls
   }
 
   /**
    * Main tick - called periodically
    */
   async tick() {
-    // Don't act if busy
-    if (this.state.isBusy()) {
-      this.lastActivity = Date.now();
+    // Prevent concurrent execution
+    if (this.isTicking) {
       return;
     }
+    this.isTicking = true;
 
-    // Check if idle time met
-    if (!this.shouldAct()) {
-      return;
+    try {
+      // Don't act if busy
+      if (this.state.isBusy()) {
+        this.lastActivity = Date.now();
+        return;
+      }
+
+      // Check if idle time met
+      if (!this.shouldAct()) {
+        return;
+      }
+
+      // Priority 1: Survival needs
+      const survivalGoal = await this.survival.check();
+      if (survivalGoal) {
+        logger.info(`[Idle] Survival: ${survivalGoal.skill}`);
+        await this.executeGoal(survivalGoal);
+        return;
+      }
+
+      // Priority 2: Scheduled tasks
+      const scheduledTask = this.scheduler.getNextTask();
+      if (scheduledTask) {
+        logger.info(`[Idle] Scheduled: ${scheduledTask.name}`);
+        await this.executeGoal(scheduledTask);
+        return;
+      }
+
+      // Priority 3: Curriculum goals
+      const curriculumGoal = this.curriculum.getNextGoal();
+      if (curriculumGoal) {
+        logger.info(`[Idle] Curriculum: ${curriculumGoal.skill}`);
+        await this.executeGoal(curriculumGoal);
+        return;
+      }
+
+      // Nothing to do
+      logger.debug('[Idle] No autonomous goal');
+    } finally {
+      this.isTicking = false;
     }
-
-    // Priority 1: Survival needs
-    const survivalGoal = await this.survival.check();
-    if (survivalGoal) {
-      logger.info(`[Idle] Survival: ${survivalGoal.skill}`);
-      await this.executeGoal(survivalGoal);
-      return;
-    }
-
-    // Priority 2: Scheduled tasks
-    const scheduledTask = this.scheduler.getNextTask();
-    if (scheduledTask) {
-      logger.info(`[Idle] Scheduled: ${scheduledTask.name}`);
-      await this.executeGoal(scheduledTask);
-      return;
-    }
-
-    // Priority 3: Curriculum goals
-    const curriculumGoal = this.curriculum.getNextGoal();
-    if (curriculumGoal) {
-      logger.info(`[Idle] Curriculum: ${curriculumGoal.skill}`);
-      await this.executeGoal(curriculumGoal);
-      return;
-    }
-
-    // Nothing to do
-    logger.debug('[Idle] No autonomous goal');
   }
 
   /**
@@ -123,7 +134,13 @@ class IdleLoop {
     }
 
     this.isRunning = true;
-    this.intervalId = setInterval(() => this.tick(), interval);
+    this.intervalId = setInterval(async () => {
+      try {
+        await this.tick();
+      } catch (error) {
+        logger.error(`[Idle] tick() error: ${error.message}`);
+      }
+    }, interval);
     logger.info(`[Idle] Started with ${interval}ms interval`);
   }
 

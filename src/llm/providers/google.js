@@ -99,22 +99,28 @@ class GoogleProvider {
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent?key=${this.apiKey}`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'models/gemini-embedding-001',
-        content: { parts: [{ text }] }
-      })
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'models/gemini-embedding-001',
+          content: { parts: [{ text }] }
+        })
+      });
 
-    const data = await response.json();
+      const data = await response.json();
 
-    if (!response.ok) {
-      throw new Error(data.error?.message || 'Embedding failed');
+      if (!response.ok) {
+        throw new Error(data.error?.message || 'Embedding failed');
+      }
+
+      return data.embedding?.values || [];
+
+    } catch (error) {
+      logger.error(`Google embedding failed: ${error.message}`);
+      throw error;
     }
-
-    return data.embedding?.values || [];
   }
 
   /**
@@ -127,16 +133,22 @@ class GoogleProvider {
 
     const url = `${this.baseUrl}/${this.model}:countTokens?key=${this.apiKey}`;
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
-    });
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      });
 
-    const data = await response.json();
-    return data.totalTokens || 0;
+      const data = await response.json();
+      return data.totalTokens || 0;
+
+    } catch (error) {
+      logger.error(`Google countTokens failed: ${error.message}`);
+      return 0; // Return 0 on error for non-critical operation
+    }
   }
 }
 

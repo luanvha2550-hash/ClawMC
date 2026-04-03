@@ -176,7 +176,7 @@ class CurriculumManager {
       'interesting_location_found': () => false, // Placeholder
       'biomes_discovered < 5': () => (this.memory?.getFacts?.('biome')?.length || 0) < 5,
       'has_enchanting_table': () => this.hasItem(inventory, 'enchanting_table'),
-      'levels > 30': () => (this.bot?.experience?.level || 0) > 30,
+      'levels > 30': () => (this.state?.bot?.experience?.level || 0) > 30,
       'has_farmland_nearby': () => false, // Placeholder
       '!has_farm': () => !this.learnedSkills.has('build_farm'),
       'has_iron_pickaxe && inventory.diamond < 5': () =>
