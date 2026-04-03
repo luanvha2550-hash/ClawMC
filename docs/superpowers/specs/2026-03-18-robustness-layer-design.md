@@ -1318,3 +1318,696 @@ Cada linha é um JSON:
 
 **Documento aprovado em:** 2026-03-18
 **Local:** `D:/Users/luanv/OneDrive/Área de Trabalho/GAMES/Trabalhos/ClawMC/`
+
+---
+
+## 11. Reconexão com Backoff Exponencial
+
+> **Nota:** Este componente deve ser implementado em `core/reconnection.js` (não no Robustness Layer), mas está documentado aqui por estar relacionado com robustez.
+
+### 11.1 Fluxo de Reconexão
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    RECONEXÃO COM BACKOFF                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. Desconexão detectada (evento 'end' ou 'kicked')             │
+│     ↓                                                            │
+│  2. Salva checkpoint (se possível)                              │
+│     ↓                                                            │
+│  3. Calcula delay: min(maxDelay, baseDelay * 2^attempt)         │
+│     ↓                                                            │
+│  4. Aguarda delay                                                │
+│     ↓                                                            │
+│  5. Tenta reconexão                                              │
+│     ├── Sucesso → Restaura estado, reseta contador             │
+│     └── Falha → Incrementa contador, volta ao passo 3          │
+│                                                                  │
+│  Após maxAttempts:                                               │
+│     ├── Log crítico                                              │
+│     └── Aguarda intervenção manual                              │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 11.2 Implementação
+
+```javascript
+// core/reconnection.js
+
+class ReconnectionManager {
+  constructor(bot, robustness, config) {
+    this.bot = bot;
+    this.robustness = robustness;
+    this.config = {
+      baseDelay: config?.baseDelay || 5000,      // 5 segundos
+      maxDelay: config?.maxDelay || 300000,       // 5 minutos
+      maxAttempts: config?.maxAttempts || 10,     // 10 tentativas
+      resetAfter: config?.resetAfter || 300000    // Reset após 5 min conectado
+    };
+
+    this.attempts = 0;
+    this.lastAttempt = 0;
+    this.reconnectTimer = null;
+  }
+
+  init() {
+    this.bot.on('end', () => this.handleDisconnect('end'));
+    this.bot.on('kicked', (reason) => this.handleDisconnect('kicked', reason));
+
+    // Reseta contador após conexão estável
+    this.bot.on('spawn', () => {
+      setTimeout(() => {
+        if (this.bot.entity) {
+          this.attempts = 0;
+          this.lastAttempt = 0;
+        }
+      }, this.config.resetAfter);
+    });
+  }
+
+  async handleDisconnect(reason, details = null) {
+    logger.warn(`[Reconnection] Desconectado: ${reason}`, details);
+
+    // Tenta salvar checkpoint
+    if (this.robustness?.checkpoint) {
+      try {
+        await this.robustness.checkpoint.save('disconnect');
+      } catch (e) {
+        logger.error('[Reconnection] Erro ao salvar checkpoint:', e);
+      }
+    }
+
+    // Verifica se deve tentar reconectar
+    if (this.attempts >= this.config.maxAttempts) {
+      logger.error(`[Reconnection] Máximo de ${this.maxAttempts} tentativas atingido`);
+      this.robustness?.eventLog?.critical('CONNECTION', 'max_attempts_reached', {
+        reason,
+        attempts: this.attempts
+      });
+      return;
+    }
+
+    // Calcula delay com backoff exponencial
+    const delay = Math.min(
+      this.config.maxDelay,
+      this.config.baseDelay * Math.pow(2, this.attempts)
+    );
+
+    this.attempts++;
+    this.lastAttempt = Date.now();
+
+    logger.info(`[Reconnection] Tentativa ${this.attempts}/${this.config.maxAttempts} em ${delay}ms`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnect(reason);
+    }, delay);
+  }
+
+  async reconnect(originalReason) {
+    try {
+      logger.info('[Reconnection] Tentando reconectar...');
+
+      // Tenta criar novo bot
+      const newBot = await createBot(this.bot.config);
+
+      // Atualiza referência
+      Object.assign(this.bot, newBot);
+
+      // Restaura estado
+      await this.robustness?.restoreFromCheckpoint();
+
+      logger.info('[Reconnection] Reconectado com sucesso');
+      this.robustness?.eventLog?.info('CONNECTION', 'reconnected', {
+        attempts: this.attempts,
+        originalReason
+      });
+
+    } catch (error) {
+      logger.error('[Reconnection] Falha:', error.message);
+      this.handleDisconnect('reconnect_failed', error.message);
+    }
+  }
+
+  // Força reconexão (manual)
+  forceReconnect() {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+    this.attempts = 0;
+    this.reconnect('manual');
+  }
+}
+```
+
+---
+
+## 12. Melhorias Adicionais
+
+### 12.1 Race Condition no State Machine
+
+**Problema Original:** O `acquire()` pode ter race condition quando múltiplas operações tentam adquirir o lock simultaneamente.
+
+**Solução:** Usar fila FIFO explícita.
+
+```javascript
+// robustness/stateMachine.js (ATUALIZADO)
+
+class OperationStateMachine {
+  constructor() {
+    this.state = 'idle';
+    this.currentOperation = null;
+    this.queue = [];  // Fila FIFO explícita
+  }
+
+  async acquire(operation) {
+    if (this.state === 'shutting_down') {
+      throw new Error('Bot está desligando');
+    }
+
+    // Se idle, adquire imediatamente
+    if (this.state === 'idle') {
+      this.state = operation;
+      this.currentOperation = operation;
+      return () => this.release();
+    }
+
+    // Adiciona à fila e aguarda
+    return new Promise((resolve) => {
+      this.queue.push({ operation, resolve });
+    });
+  }
+
+  release() {
+    this.state = 'idle';
+    this.currentOperation = null;
+
+    // Processa próximo da fila (FIFO)
+    if (this.queue.length > 0) {
+      const next = this.queue.shift();
+      this.state = next.operation;
+      this.currentOperation = next.operation;
+      next.resolve(() => this.release());
+    }
+  }
+
+  canExecute(operation) {
+    return this.state === 'idle' && this.queue.length === 0;
+  }
+
+  async forceShutdown() {
+    this.state = 'shutting_down';
+
+    // Rejeita todas as operações pendentes
+    while (this.queue.length > 0) {
+      const pending = this.queue.shift();
+      pending.resolve(() => {
+        throw new Error('Shutdown em andamento');
+      });
+    }
+  }
+
+  getQueueLength() {
+    return this.queue.length;
+  }
+}
+```
+
+### 12.2 Whitelist para Stuck Detector
+
+**Problema Original:** Tarefas legítimas podem manter o bot parado sem estar travado.
+
+**Solução:** Lista de tarefas permitidas para ficar paradas.
+
+```javascript
+// robustness/stuckDetector.js (ATUALIZADO)
+
+class StuckDetector {
+  constructor(bot, state, eventLog, config) {
+    this.bot = bot;
+    this.state = state;
+    this.eventLog = eventLog;
+
+    // Whitelist de tarefas que podem ficar paradas
+    this.stationaryTasks = new Set([
+      'waiting',           // Aguardando jogador
+      'guarding',          // Guardando posição
+      'processing',        // Processando inventário
+      'crafting',          // Craftando
+      'trading',           // Trocando com villager
+      'sleeping',          // Dormindo
+      'waiting_day',       // Aguardando dia
+      'waiting_weather',   // Aguardando clima
+      'harvesting',        // Colhendo plantações (pode ficar parado)
+      'storage_organize'   // Organizando baús
+    ]);
+
+    this.stuckCount = 0;
+    this.stuckThreshold = config?.stuckThreshold || 3;
+    this.lastPosition = null;
+  }
+
+  checkPosition() {
+    const currentPos = this.bot.entity.position;
+    const currentTask = this.state.currentTask?.type;
+
+    // Se tarefa está na whitelist, não incrementa contador
+    if (this.stationaryTasks.has(currentTask)) {
+      this.stuckCount = 0;
+      this.lastPosition = currentPos;
+      return false;
+    }
+
+    // Verifica se posição mudou
+    if (this.lastPosition && currentPos.equals(this.lastPosition)) {
+      this.stuckCount++;
+      if (this.stuckCount >= this.stuckThreshold) {
+        this.handleStuck(currentTask);
+        return true;
+      }
+    } else {
+      this.stuckCount = 0;
+    }
+
+    this.lastPosition = currentPos;
+    return false;
+  }
+
+  // Adiciona tarefa à whitelist
+  allowStationary(task) {
+    this.stationaryTasks.add(task);
+  }
+
+  // Remove tarefa da whitelist
+  disallowStationary(task) {
+    this.stationaryTasks.delete(task);
+  }
+}
+```
+
+### 12.3 Reset Automático no Circuit Breaker
+
+**Problema Original:** Circuit Breaker não tem mecanismo de probe automático em `half-open`.
+
+**Solução:** Probe periódico com reset automático.
+
+```javascript
+// llm/circuitBreaker.js (ATUALIZADO)
+
+class CircuitBreaker {
+  constructor(threshold = 5, timeout = 60000) {
+    this.threshold = threshold;
+    this.timeout = timeout;
+    this.failures = new Map();
+    this.states = new Map();
+    this.lastFailure = new Map();
+    this.probeTimers = new Map(); // Timers de probe
+  }
+
+  canTry(provider) {
+    const state = this.states.get(provider) || 'closed';
+
+    if (state === 'closed') {
+      return true;
+    }
+
+    if (state === 'open') {
+      const lastFail = this.lastFailure.get(provider) || 0;
+      const elapsed = Date.now() - lastFail;
+
+      if (elapsed > this.timeout) {
+        // Transição para half-open e agenda probe
+        this.states.set(provider, 'half-open');
+        this.scheduleProbe(provider);
+        return true;
+      }
+
+      return false;
+    }
+
+    // half-open: permite uma tentativa
+    return true;
+  }
+
+  // Agenda probe automático
+  scheduleProbe(provider) {
+    if (this.probeTimers.has(provider)) {
+      clearTimeout(this.probeTimers.get(provider));
+    }
+
+    this.probeTimers.set(provider, setTimeout(() => {
+      // Se ainda em half-open após timeout, volta para open
+      if (this.states.get(provider) === 'half-open') {
+        this.states.set(provider, 'open');
+        logger.warn(`[CircuitBreaker] Provider ${provider} voltou para 'open' (probe falhou)`);
+      }
+    }, this.timeout / 2)); // Probe a cada metade do timeout
+  }
+
+  onSuccess(provider) {
+    this.failures.set(provider, 0);
+    this.states.set(provider, 'closed');
+
+    // Cancela probe timer
+    if (this.probeTimers.has(provider)) {
+      clearTimeout(this.probeTimers.get(provider));
+      this.probeTimers.delete(provider);
+    }
+  }
+
+  onFailure(provider) {
+    const count = (this.failures.get(provider) || 0) + 1;
+    this.failures.set(provider, count);
+    this.lastFailure.set(provider, Date.now());
+
+    if (count >= this.threshold) {
+      this.states.set(provider, 'open');
+      logger.warn(`[CircuitBreaker] Provider ${provider} aberto após ${count} falhas`);
+    }
+  }
+
+  reset(provider) {
+    this.failures.set(provider, 0);
+    this.states.set(provider, 'closed');
+    this.lastFailure.delete(provider);
+
+    if (this.probeTimers.has(provider)) {
+      clearTimeout(this.probeTimers.get(provider));
+      this.probeTimers.delete(provider);
+    }
+  }
+}
+```
+
+### 12.4 Limite de Descrição para Embeddings
+
+**Problema Original:** Descrições muito longas geram embeddings menos precisos.
+
+**Solução:** Limitar descrição a 200 caracteres.
+
+```javascript
+// memory/skillDocs.js (ATUALIZADO)
+
+class SkillDocumentation {
+  constructor(embeddings, database) {
+    this.embeddings = embeddings;
+    this.db = database;
+    this.maxDescriptionLength = 200; // Limite para embeddings
+  }
+
+  async generateDescription(code, task, result) {
+    const parts = [];
+
+    // O que a skill faz
+    parts.push(`Skill que ${task.intent || 'executa'} ${task.action || 'tarefa'}`);
+
+    // Parâmetros usados
+    if (task.material) parts.push(`usando ${task.material}`);
+    if (task.dimensions) parts.push(`dimensões ${task.dimensions.width}x${task.dimensions.length}`);
+
+    // Condições (simplificadas)
+    if (code.includes('findBlock')) parts.push('encontra blocos');
+    if (code.includes('pathfinder')) parts.push('navega');
+    if (code.includes('dig')) parts.push('minera');
+    if (code.includes('craft')) parts.push('crafta');
+
+    // Resultado
+    if (result.success) {
+      parts.push(`sucesso em ${result.duration}ms`);
+    }
+
+    let description = parts.join('. ') + '.';
+
+    // LIMITA TAMANHO
+    if (description.length > this.maxDescriptionLength) {
+      description = description.substring(0, this.maxDescriptionLength - 3) + '...';
+    }
+
+    return description;
+  }
+
+  // Tags já são usadas para busca adicional
+  extractTags(task, code) {
+    const tags = new Set();
+
+    if (task.intent) tags.add(task.intent.toLowerCase());
+    if (task.action) tags.add(task.action.toLowerCase());
+    if (task.material) tags.add(task.material.toLowerCase());
+
+    // Tags do código
+    const codeTags = {
+      'mine': 'mining',
+      'build': 'building',
+      'craft': 'crafting',
+      'collect': 'gathering',
+      'explore': 'exploration'
+    };
+
+    for (const [pattern, tag] of Object.entries(codeTags)) {
+      if (code.includes(pattern)) tags.add(tag);
+    }
+
+    return Array.from(tags);
+  }
+}
+```
+
+### 12.5 Histórico Mínimo no Snapshot
+
+**Problema Original:** Comandos multi-turn perdem contexto.
+
+**Solução:** Incluir últimos 5 comandos no snapshot.
+
+```javascript
+// llm/snapshots.js (ATUALIZADO)
+
+class SemanticSnapshot {
+  constructor(bot, state, memory, config) {
+    this.bot = bot;
+    this.state = state;
+    this.memory = memory;
+    this.commandHistory = [];  // Histórico de comandos
+    this.maxHistoryLength = config?.maxHistoryLength || 5;
+  }
+
+  // Adiciona comando ao histórico
+  addToHistory(command, result) {
+    this.commandHistory.push({
+      command,
+      result: result?.success ? 'success' : 'failed',
+      timestamp: Date.now()
+    });
+
+    // Mantém apenas os últimos N comandos
+    if (this.commandHistory.length > this.maxHistoryLength) {
+      this.commandHistory.shift();
+    }
+  }
+
+  generate() {
+    return {
+      // Posição e ambiente
+      position: this.bot.entity.position,
+      dimension: this.bot.game.dimension,
+      time: this.bot.time.day,
+
+      // Estado do bot
+      health: this.bot.health,
+      food: this.bot.food,
+      inventory: this.compactInventory(),
+
+      // Entidades próximas
+      nearbyEntities: this.getNearbyEntities(32),
+      nearbyBlocks: this.getNearbyBlocks(16),
+
+      // Tarefa atual
+      currentTask: this.state.currentTask?.type || null,
+
+      // NOVO: Histórico de comandos
+      commandHistory: this.commandHistory,
+
+      // Fatos relevantes
+      relevantFacts: this.memory.getRelevantFacts(5),
+
+      timestamp: Date.now()
+    };
+  }
+
+  formatForPrompt() {
+    const snapshot = this.generate();
+
+    // Formata histórico
+    const historyStr = snapshot.commandHistory
+      .map(h => `${h.command} (${h.result})`)
+      .join(' → ') || 'nenhum';
+
+    return `
+[ESTADO ATUAL]
+Posição: (${snapshot.position.x}, ${snapshot.position.y}, ${snapshot.position.z})
+Vida: ${snapshot.health}/20 | Fome: ${snapshot.food}/20
+Inventário: ${snapshot.inventory}
+Entidades próximas: ${snapshot.nearbyEntities.map(e => `${e.type}(${e.distance}m)`).join(', ') || 'nenhuma'}
+Tarefa atual: ${snapshot.currentTask || 'nenhuma'}
+
+[HISTÓRICO DE COMANDOS]
+${historyStr}
+
+[FATOS RELEVANTES]
+${snapshot.relevantFacts.map(f => f.key).join(', ') || 'nenhum'}
+`.trim();
+  }
+}
+```
+
+### 12.6 Autenticação no Protocolo Community
+
+**Problema Original:** Qualquer jogador pode enviar mensagens falsas de bot.
+
+**Solução:** Token compartilhado ou HMAC.
+
+```javascript
+// community/protocol.js (ATUALIZADO)
+
+const crypto = require('crypto');
+
+class CommunicationProtocol {
+  constructor(config) {
+    this.sharedSecret = config.community?.sharedSecret || process.env.COMMUNITY_SECRET;
+    this.messageExpiry = config.community?.messageExpiry || 30000; // 30 segundos
+  }
+
+  // Gera assinatura HMAC para mensagem
+  signMessage(message) {
+    if (!this.sharedSecret) {
+      // Fallback sem autenticação se não configurado
+      return { ...message, signature: null };
+    }
+
+    const payload = JSON.stringify({
+      name: message.name,
+      type: message.type,
+      data: message.data,
+      timestamp: message.timestamp
+    });
+
+    const signature = crypto
+      .createHmac('sha256', this.sharedSecret)
+      .update(payload)
+      .digest('hex');
+
+    return { ...message, signature };
+  }
+
+  // Verifica assinatura de mensagem
+  verifyMessage(message) {
+    if (!this.sharedSecret) {
+      // Sem autenticação configurada, aceita todas
+      return { valid: true, reason: 'no_auth' };
+    }
+
+    if (!message.signature) {
+      return { valid: false, reason: 'missing_signature' };
+    }
+
+    // Verifica expiração
+    const age = Date.now() - message.timestamp;
+    if (age > this.messageExpiry) {
+      return { valid: false, reason: 'expired' };
+    }
+
+    // Verifica assinatura
+    const payload = JSON.stringify({
+      name: message.name,
+      type: message.type,
+      data: message.data,
+      timestamp: message.timestamp
+    });
+
+    const expectedSignature = crypto
+      .createHmac('sha256', this.sharedSecret)
+      .update(payload)
+      .digest('hex');
+
+    if (message.signature !== expectedSignature) {
+      return { valid: false, reason: 'invalid_signature' };
+    }
+
+    return { valid: true, reason: 'authenticated' };
+  }
+
+  // Processa mensagem recebida
+  processMessage(username, rawMessage) {
+    // Tenta parsear JSON
+    if (!rawMessage.startsWith('[COMM:')) {
+      return null;
+    }
+
+    try {
+      const type = rawMessage.match(/\[COMM:(\w+)\]/)?.[1];
+      const jsonStr = rawMessage.replace(/\[COMM:\w+\]/, '').trim();
+      const message = {
+        type,
+        ...JSON.parse(jsonStr)
+      };
+
+      // Verifica autenticação
+      const verification = this.verifyMessage(message);
+
+      if (!verification.valid) {
+        logger.warn(`[Protocol] Mensagem rejeitada: ${verification.reason}`, message);
+        return null;
+      }
+
+      return message;
+
+    } catch (e) {
+      logger.debug('[Protocol] Mensagem inválida:', e.message);
+      return null;
+    }
+  }
+}
+```
+
+**Configuração:**
+
+```json
+{
+  "community": {
+    "enabled": true,
+    "sharedSecret": "${COMMUNITY_SECRET}",
+    "messageExpiry": 30000,
+    "name": "Vila dos Bots"
+  }
+}
+```
+
+```env
+# .env
+COMMUNITY_SECRET=your_shared_secret_here_min_32_chars
+```
+
+---
+
+## 13. Checklist de Implementação Atualizado
+
+1. ~~Implementar `metrics.js`~~ → **Robustness Layer**
+2. ~~Implementar `eventLog.js`~~ → **Robustness Layer**
+3. ~~Implementar `alerts.js`~~ → **Robustness Layer**
+4. ~~Implementar `gracefulShutdown.js`~~ → **Robustness Layer**
+5. ~~Implementar `deathRecovery.js`~~ → **Robustness Layer**
+6. ~~Implementar `stuckDetector.js`~~ → **Robustness Layer** (com whitelist)
+7. ~~Implementar `checkpoint.js`~~ → **Robustness Layer**
+8. ~~Implementar `index.js`~~ (integração) → **Robustness Layer**
+9. Implementar `reconnection.js` → **Core Layer** (com backoff)
+10. Atualizar `database.js` com novas tabelas → **Memory Layer**
+11. Atualizar `config.json` com configurações
+12. **NOVO:** Implementar testes unitários
+13. **NOVO:** Implementar testes de integração
+14. **NOVO:** Configurar schema validation
+15. **NOVO:** Implementar migrações de banco
+16. **NOVO:** Documentar ordem de inicialização
+17. **NOVO:** Implementar Timeout Manager
+18. **NOVO:** Implementar modo dry-run
+19. **NOVO:** Adicionar telemetria opcional
+20. **NOVO:** Implementar Health Server HTTP

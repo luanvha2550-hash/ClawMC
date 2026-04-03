@@ -31,11 +31,6 @@ class SharedFacts {
     // Queue for sync
     this.pendingSync.push({ key, value, timestamp: now });
 
-    // Create sync message for immediate use
-    if (this.protocol) {
-      this.protocol.encode('SYNC', { facts: this.pendingSync.slice(-10) });
-    }
-
     logger.debug(`[SharedFacts] Queued fact: ${key}`);
   }
 
@@ -159,6 +154,13 @@ class SharedFacts {
       this.syncTimer = null;
     }
     logger.info('[SharedFacts] Stopped sync');
+  }
+
+  /**
+   * Stop sync (alias for stopSync)
+   */
+  stop() {
+    this.stopSync();
   }
 
   /**

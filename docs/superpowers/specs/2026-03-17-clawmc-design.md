@@ -462,91 +462,65 @@ async function process(chatMessage, username) {
 
 ### 4.5 `persistence.js` - Persistência de Estado
 
-**Problema:** Quando o bot desconecta ou o servidor reinicia, todo o progresso é perdido (tarefa atual, objetivos, fatos aprendidos).
+> **⚠️ UNIFICADO COM ROBUSTNESS LAYER**
+>
+> Esta funcionalidade foi **unificada com o Robustness Layer** (ver documento `2026-03-18-robustness-layer-design.md`).
+>
+> O componente `CheckpointManager` do Robustness Layer substitui completamente o `StatePersistence`,
+> oferecendo funcionalidades mais robustas:
+> - Checkpoints automáticos a cada 5 minutos
+> - Checkpoints em eventos críticos (death, shutdown)
+> - Restauração automática ao reconectar
+> - Tratamento de erros SQLite com fallback in-memory
+> - Integração com State Machine para evitar race conditions
+>
+> **Não implementar este arquivo separadamente.** Usar apenas `robustness/checkpoint.js`.
 
-**Solução:** Salvar estado periodicamente e restaurar ao reconectar.
+**Funcionalidades mantidas pelo Robustness Layer:**
+
+| Funcionalidade | Componente Robustness |
+|----------------|----------------------|
+| Salvar estado periodicamente | `CheckpointManager.save('auto')` |
+| Restaurar ao reconectar | `CheckpointManager.restore()` |
+| Salvar em shutdown | `CheckpointManager.save('shutdown')` |
+| Salvar em morte | `CheckpointManager.save('death')` |
+| Estado do currículo | Incluído no checkpoint |
+
+**Interface de Integração:**
 
 ```javascript
-// core/persistence.js
-
-class StatePersistence {
-  constructor(db, state) {
-    this.db = db;
-    this.state = state;
-    this.saveInterval = 60000; // Salva a cada 1 minuto
-    this.lastSave = null;
+// No bot.js, após spawn
+bot.on('spawn', async () => {
+  const restored = await robustness.checkpoint.restore();
+  if (restored) {
+    logger.info('[Persistence] Estado restaurado do checkpoint');
+    if (restored.task) {
+      state.pendingTask = restored.task;
+    }
   }
+});
 
-  // Inicializa persistência
-  async init() {
-    // Cria tabela de estado
-    await this.db.run(`
-      CREATE TABLE IF NOT EXISTS bot_state (
-        key TEXT PRIMARY KEY,
-        value TEXT,
-        updated_at DATETIME
-      )
-    `);
+// Ao mudar fase do currículo
+curriculum.onPhaseChange((newPhase) => {
+  robustness.checkpoint.save('auto');
+});
+```
 
-    // Restaura estado anterior
-    await this.restore();
+**Métodos originais (agora no CheckpointManager):**
 
-    // Inicia salvamento periódico
-    this.startAutoSave();
-  }
+```javascript
+// NÃO IMPLEMENTAR - Usar robustness/checkpoint.js
 
-  // Salva estado atual
-  async save() {
-    const stateData = {
-      currentTask: this.state.currentTask,
-      position: this.state.bot?.entity?.position,
-      inventory: this.state.getInventory(),
-      following: this.state.following,
-      curriculumPhase: this.state.curriculumPhase,
-      lastLocation: this.state.lastLocation
-    };
+// Métodos equivalentes no CheckpointManager:
+// persistence.save()        → checkpoint.save('auto')
+// persistence.restore()     → checkpoint.restore()
+// persistence.clear()       → checkpoint.clear()
+// persistence.startAutoSave() → checkpoint.init() + startMonitoring()
+```
 
-    // Salva cada campo
-    for (const [key, value] of Object.entries(stateData)) {
-      await this.db.run(`
-        INSERT OR REPLACE INTO bot_state (key, value, updated_at)
-        VALUES (?, ?, ?)
-      `, [key, JSON.stringify(value), new Date().toISOString()]);
-    }
+**Tabelas SQL movidas para o Robustness Layer:**
 
-    this.lastSave = Date.now();
-    logger.debug('[Persistence] Estado salvo');
-  }
-
-  // Restaura estado salvo
-  async restore() {
-    const rows = await this.db.all('SELECT key, value FROM bot_state');
-
-    if (rows.length === 0) {
-      logger.info('[Persistence] Nenhum estado anterior encontrado');
-      return;
-    }
-
-    const savedState = {};
-    for (const row of rows) {
-      savedState[row.key] = JSON.parse(row.value);
-    }
-
-    // Restaura estado
-    if (savedState.currentTask) {
-      logger.info(`[Persistence] Restaurando tarefa: ${savedState.currentTask.type}`);
-      this.state.pendingTask = savedState.currentTask;
-    }
-
-    if (savedState.curriculumPhase) {
-      this.state.curriculumPhase = savedState.curriculumPhase;
-    }
-
-    if (savedState.lastLocation) {
-      this.state.lastLocation = savedState.lastLocation;
-    }
-
-    logger.info('[Persistence] Estado restaurado');
+As tabelas `bot_state` e `checkpoints` agora são gerenciadas pelo Robustness Layer. Ver documento `2026-03-18-robustness-layer-design.md` para schema completo.
   }
 
   // Salvamento automático
@@ -567,33 +541,6 @@ class StatePersistence {
 
   // Limpa estado (para logout/reset)
   async clear() {
-    await this.db.run('DELETE FROM bot_state');
-    logger.info('[Persistence] Estado limpo');
-  }
-}
-```
-
-**Eventos de Salvamento:**
-- **Periódico:** A cada 1 minuto
-- **Tarefa iniciada:** `setTask()` → `save()`
-- **Tarefa concluída:** `clearTask()` → `save()`
-- **Desconexão:** `bot.on('end')` → `save()`
-
-**Restauração:**
-```javascript
-// No bot.js, após conectar
-bot.on('spawn', async () => {
-  await persistence.restore();
-
-  // Se tinha tarefa pendente, retoma
-  if (state.pendingTask) {
-    logger.info(`Retomando tarefa: ${state.pendingTask.type}`);
-    // Aguarda 5 segundos para estabilizar
-    setTimeout(() => autonomy.resumeTask(state.pendingTask), 5000);
-  }
-});
-```
-
 ---
 
 ## 5. Memory Layer
@@ -921,9 +868,23 @@ export default EmbeddingsManager;
 
 #### 5.2.5 Graceful Degradation (Gerenciamento de Memória)
 
+> **⚠️ INTEGRAÇÃO COM ROBUSTNESS LAYER**
+>
+> O monitoramento de memória e degradação graciosa agora é **gerenciado pelo Alert System** do Robustness Layer.
+>
+> O `MemoryManager` abaixo é mantido como referência de implementação das **ações de degradação**,
+> mas os **thresholds e monitoramento** são feitos pelo `AlertSystem` (ver `robustness/alerts.js`).
+>
+> **Fluxo Integrado:**
+> 1. `AlertSystem` monitora memória a cada 30s (thresholds: 85% warning, 91% critical)
+> 2. Quando alerta dispara, chama callback de ação degradada
+> 3. `MemoryManager` executa ações: descarregar embeddings, limpar cache, forçar GC
+> 4. `EventLogger` registra evento de degradação
+> 5. `MetricsCollector` atualiza métricas
+
 **Problema:** O hardware tem apenas 8GB RAM e o cliente do Minecraft consome parte significativa. Quando a RAM está alta (>91%), o sistema pode ficar instável.
 
-**Solução:** Degradar automaticamente recursos para manter o bot funcional.
+**Solução:** Degradar automaticamente recursos para manter o bot funcional, **acionado pelo Alert System**.
 
 ```javascript
 // memory/memoryManager.js
@@ -1048,6 +1009,73 @@ class MemoryManager {
 ```
 
 **Nota:** O garbage collector explícito (`global.gc()`) requer Node.js iniciado com `--expose-gc`. Em produção, use PM2 ou systemd para reiniciar o processo se a memória ficar crítica por muito tempo.
+
+#### 5.2.6 Integração Memory Manager + Alert System
+
+```javascript
+// Configuração de integração no config.json
+{
+  "robustness": {
+    "alerts": {
+      "memoryHigh": {
+        "threshold": 85,
+        "action": "warn"  // Apenas log
+      },
+      "memoryCritical": {
+        "threshold": 91,
+        "action": "degrade"  // Chama MemoryManager.degrade()
+      }
+    }
+  },
+  "memory": {
+    "criticalThreshold": 95,
+    "enableGC": true
+  }
+}
+
+// No Robustness Layer (robustness/index.js)
+async init() {
+  // ... inicializa componentes
+
+  // Registra callback de degradação
+  this.alerts.registerAction('memoryCritical', async () => {
+    await this.memoryManager.degrade();
+  });
+
+  // Registra callback de restauração
+  this.alerts.registerAction('memoryResolved', async () => {
+    await this.memoryManager.restore();
+  });
+}
+```
+
+**Orçamento de RAM (8GB Total):**
+
+| Componente | Uso Típico | Pico | Ação se Crítico |
+|------------|------------|------|-----------------|
+| Node.js Base | ~100MB | ~150MB | - |
+| Mineflayer + Pathfinder | ~150MB | ~250MB | - |
+| SQLite + sqlite-vec | ~30MB | ~100MB | Limpar queries pendentes |
+| Embeddings (local) | ~200MB | ~350MB | **Descarregar modelo** |
+| Cache de Embeddings | ~50MB | ~200MB | **Limpar cache** |
+| Cache de Skills | ~20MB | ~50MB | Reduzir maxCacheSize |
+| Logs e Buffers | ~30MB | ~100MB | Flush forçado |
+| **Margem de Segurança** | ~100MB | - | - |
+| **TOTAL** | ~680MB | ~1.2GB | - |
+
+**Limite de Cache Absoluto:**
+
+```javascript
+// memory/embeddings.js
+const MAX_CACHE_SIZE_ABSOLUTE = 500; // Nunca exceder 500 entradas
+
+if (this.cache.size >= MAX_CACHE_SIZE_ABSOLUTE) {
+  // Remove 20% mais antigos
+  const keysToRemove = Array.from(this.cache.keys()).slice(0, Math.floor(MAX_CACHE_SIZE_ABSOLUTE * 0.2));
+  keysToRemove.forEach(key => this.cache.delete(key));
+  logger.warn(`[Embeddings] Cache reduzido para ${this.cache.size} entradas`);
+}
+```
 
 ### 5.3 `rag.js` - Consultas Semânticas
 
@@ -3634,6 +3662,203 @@ function handleCorruptedSkill(filePath, error) {
 
 ---
 
+## 14.1 Requisitos de Ambiente e Problemas Conhecidos
+
+### 14.1.1 `isolated-vm` no Windows
+
+**⚠️ Problema Conhecido:**
+
+A dependência `isolated-vm` tem problemas conhecidos de compilação no Windows:
+
+- Requer toolchain C++ nativa (Visual Studio Build Tools)
+- Incompatível com Node.js 18+ em alguns casos
+- Builds frequentemente falham com erros de linkagem
+- Requer Python 3.x configurado corretamente
+
+**Soluções Recomendadas:**
+
+| Opção | Descrição | Segurança | Dificuldade |
+|-------|-----------|-----------|-------------|
+| **1. WSL2** | Executar em Windows Subsystem for Linux | ⭐⭐⭐⭐⭐ | Baixa |
+| **2. Docker** | Container Linux com Node.js | ⭐⭐⭐⭐⭐ | Média |
+| **3. SES** | Usar `ses` (Secure ECMAScript) como alternativa | ⭐⭐⭐ | Baixa |
+| **4. VM2** | Usar `vm2` como alternativa (mais portável) | ⭐⭐ | Baixa |
+| **5. Build Tools** | Instalar Visual Studio Build Tools completo | ⭐⭐⭐⭐ | Alta |
+
+**Implementação da Alternativa (SES):**
+
+```javascript
+// skills/executor.js - Alternativa com SES
+
+import { makeHardener, lockdown } from 'ses';
+
+// Lockdown global para segurança
+lockdown();
+
+// Sandbox com SES
+class SESSandbox {
+  constructor() {
+    this.harden = makeHardener();
+  }
+
+  async execute(code, context, timeout = 30000) {
+    // Cria sandbox SES
+    const sandbox = this.createSandbox(context);
+
+    // Compila código em sandbox isolada
+    const compartment = new Compartment({
+      ...sandbox,
+      console: this.createSafeConsole()
+    });
+
+    // Executa com timeout
+    const executeWithTimeout = Promise.race([
+      compartment.evaluate(code),
+      this.createTimeout(timeout)
+    ]);
+
+    return executeWithTimeout;
+  }
+
+  createSandbox(context) {
+    // Apenas objetos permitidos
+    return {
+      bot: this.harden(this.proxyBot(context.bot)),
+      params: this.harden(context.params),
+      Math: this.harden(Math),
+      Date: this.harden(Date),
+      JSON: this.harden(JSON)
+    };
+  }
+
+  createSafeConsole() {
+    // Console limitado (apenas log, warn, error)
+    return {
+      log: (...args) => logger.debug('[Sandbox]', ...args),
+      warn: (...args) => logger.warn('[Sandbox]', ...args),
+      error: (...args) => logger.error('[Sandbox]', ...args)
+    };
+  }
+}
+```
+
+**Verificação de Ambiente:**
+
+```javascript
+// utils/environmentCheck.js
+
+async function checkEnvironment() {
+  const issues = [];
+
+  // 1. Verifica Node.js version
+  const nodeVersion = process.versions.node;
+  if (nodeVersion < '18.0.0') {
+    issues.push(`Node.js ${nodeVersion} muito antigo. Recomendado: 18.x ou 20.x`);
+  }
+
+  // 2. Verifica se isolated-vm está disponível
+  let hasIsolatedVM = false;
+  try {
+    require('isolated-vm');
+    hasIsolatedVM = true;
+  } catch (e) {
+    issues.push('isolated-vm não disponível. Usando sandbox alternativo (SES).');
+  }
+
+  // 3. Verifica RAM disponível
+  const totalRAM = require('os').totalmem();
+  if (totalRAM < 6 * 1024 * 1024 * 1024) { // 6GB
+    issues.push(`RAM total: ${Math.round(totalRAM / (1024*1024*1024))}GB. Recomendado: 8GB+`);
+  }
+
+  // 4. Verifica better-sqlite3
+  try {
+    require('better-sqlite3');
+  } catch (e) {
+    issues.push('better-sqlite3 não disponível. Verifique instalação.');
+  }
+
+  // 5. Verifica sqlite-vec
+  try {
+    require('sqlite-vec');
+  } catch (e) {
+    issues.push('sqlite-vec não disponível. Busca semântica não funcionará.');
+  }
+
+  return {
+    nodeVersion,
+    hasIsolatedVM,
+    totalRAM: Math.round(totalRAM / (1024*1024*1024)),
+    issues,
+    isReady: issues.filter(i => !i.includes('isolated-vm')).length === 0
+  };
+}
+```
+
+**Configuração Condicional:**
+
+```json
+// config.json
+{
+  "sandbox": {
+    "type": "auto",
+    "timeout": 30000,
+    "fallback": "ses"
+  }
+}
+```
+
+```javascript
+// skills/executor.js
+
+function createSandbox(config) {
+  const sandboxType = config.sandbox.type;
+
+  if (sandboxType === 'auto') {
+    // Auto-detecta ambiente
+    try {
+      require('isolated-vm');
+      logger.info('[Executor] Usando isolated-vm (sandbox seguro)');
+      return new IsolatedVMSandbox(config);
+    } catch (e) {
+      logger.warn('[Executor] isolated-vm não disponível, usando SES');
+      return new SESSandbox(config);
+    }
+  }
+
+  if (sandboxType === 'isolated-vm') {
+    return new IsolatedVMSandbox(config);
+  }
+
+  if (sandboxType === 'ses') {
+    return new SESSandbox(config);
+  }
+
+  throw new Error(`Tipo de sandbox desconhecido: ${sandboxType}`);
+}
+```
+
+### 14.1.2 Requisitos Mínimos de Hardware
+
+| Componente | Mínimo | Recomendado |
+|------------|--------|-------------|
+| RAM | 6GB | 8GB+ |
+| CPU | 2 cores | 4 cores+ |
+| Disco | 500MB | 1GB+ |
+| Node.js | 18.x | 20.x LTS |
+
+### 14.1.3 Plataformas Suportadas
+
+| Plataforma | Status | Notas |
+|------------|--------|-------|
+| Linux (x64) | ✅ Totalmente suportado | Ambiente recomendado |
+| macOS (x64/ARM) | ✅ Totalmente suportado | Requer Xcode Command Line Tools |
+| Windows (WSL2) | ✅ Totalmente suportado | Usar WSL2 com Ubuntu |
+| Windows (Nativo) | ⚠️ Parcialmente suportado | isolated-vm pode falhar, usar SES |
+| Docker (Linux) | ✅ Totalmente suportado | Ambiente isolado recomendado |
+
+---
+
 ## 15. Gerenciamento de Custos
 
 ### 15.1 Rastreamento de Uso
@@ -3824,6 +4049,1113 @@ sudo apt-get install build-essential python3
 # Compilar
 npm rebuild isolated-vm
 ```
+
+---
+
+## 16.1 Testes Automatizados
+
+### 16.1.1 Estrutura de Testes
+
+```
+tests/
+├── unit/
+│   ├── core/
+│   │   ├── commands.test.js       # Parser de comandos
+│   │   ├── state.test.js          # Gerenciador de estado
+│   │   └── ooda.test.js           # Loop OODA
+│   ├── memory/
+│   │   ├── embeddings.test.js     # Sistema de embeddings
+│   │   ├── rag.test.js           # Busca semântica
+│   │   └── facts.test.js         # Gerenciador de fatos
+│   ├── skills/
+│   │   ├── executor.test.js      # Sandbox de execução
+│   │   ├── registry.test.js      # Registro de skills
+│   │   └── base/
+│   │       ├── walk.test.js
+│   │       ├── mine.test.js
+│   │       └── ...
+│   ├── llm/
+│   │   ├── router.test.js        # Roteamento + fallback
+│   │   ├── circuitBreaker.test.js # Circuit breaker
+│   │   └── modelSelector.test.js  # Seleção de modelo
+│   └── robustness/
+│       ├── metrics.test.js
+│       ├── alerts.test.js
+│       ├── checkpoint.test.js
+│       └── stateMachine.test.js
+│
+├── integration/
+│   ├── bot-lifecycle.test.js      # Ciclo de vida completo
+│   ├── skill-execution.test.js    # Execução de skill
+│   ├── memory-flow.test.js        # Fluxo de memória
+│   ├── llm-fallback.test.js       # Fallback de providers
+│   └── death-recovery.test.js     # Recuperação de morte
+│
+├── e2e/
+│   ├── commands.test.js           # Comandos de usuário
+│   ├── autonomy.test.js           # Comportamento autônomo
+│   └── multi-bot.test.js          # Multi-bot cooperation
+│
+└── mocks/
+    ├── bot.mock.js                # Mock do mineflayer
+    ├── llm.mock.js                # Mock do LLM
+    ├── embeddings.mock.js         # Mock de embeddings
+    └── server.mock.js             # Mock de servidor Minecraft
+```
+
+### 16.1.2 Mock do Bot
+
+```javascript
+// tests/mocks/bot.mock.js
+
+function createMockBot(overrides = {}) {
+  return {
+    // Estado
+    username: 'TestBot',
+    entity: {
+      position: { x: 0, y: 64, z: 0 },
+      velocity: { x: 0, y: 0, z: 0 }
+    },
+    health: 20,
+    food: 20,
+
+    // Inventário
+    inventory: {
+      items: () => [],
+      count: () => 0,
+      slots: []
+    },
+
+    // Pathfinder
+    pathfinder: {
+      goto: jest.fn().mockResolvedValue(undefined),
+      stop: jest.fn(),
+      setGoal: jest.fn()
+    },
+
+    // Ações
+    dig: jest.fn().mockResolvedValue(undefined),
+    placeBlock: jest.fn().mockResolvedValue(undefined),
+    chat: jest.fn(),
+    lookAt: jest.fn(),
+    attack: jest.fn(),
+    jump: jest.fn(),
+
+    // Eventos
+    on: jest.fn(),
+    once: jest.fn(),
+    emit: jest.fn(),
+    removeListener: jest.fn(),
+
+    // Mundo
+    findBlocks: jest.fn().mockReturnValue([]),
+    blockAt: jest.fn().mockReturnValue({ name: 'air' }),
+    entities: {},
+
+    ...overrides
+  };
+}
+
+module.exports = { createMockBot };
+```
+
+### 16.1.3 Teste de Exemplo
+
+```javascript
+// tests/unit/core/commands.test.js
+
+const { CommandParser } = require('../../../src/core/commands');
+const { createMockBot } = require('../../mocks/bot.mock');
+
+describe('CommandParser', () => {
+  let parser;
+  let mockIdentity;
+
+  beforeEach(() => {
+    mockIdentity = {
+      isForMe: jest.fn().mockReturnValue(true),
+      parseCommand: jest.fn((_, msg) => msg.replace('!', '')),
+      name: 'TestBot'
+    };
+    parser = new CommandParser(mockIdentity);
+  });
+
+  describe('parse()', () => {
+    it('should parse simple command', () => {
+      const result = parser.parse('Player', '!mine iron 64');
+      expect(result.intent).toBe('mine');
+      expect(result.args).toEqual(['iron', '64']);
+    });
+
+    it('should handle multi-word intent', () => {
+      const result = parser.parse('Player', '!construa casa pedra');
+      expect(result.intent).toBe('construa');
+      expect(result.args).toEqual(['casa', 'pedra']);
+    });
+
+    it('should return null for non-matching command', () => {
+      mockIdentity.isForMe.mockReturnValue(false);
+      const result = parser.parse('Player', '!mine iron');
+      expect(result).toBeNull();
+    });
+  });
+});
+```
+
+### 16.1.4 Cobertura de Testes
+
+```json
+// package.json
+{
+  "scripts": {
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:unit": "jest --testPathPattern=unit",
+    "test:integration": "jest --testPathPattern=integration",
+    "test:e2e": "jest --testPathPattern=e2e"
+  },
+  "jest": {
+    "coverageThreshold": {
+      "global": {
+        "branches": 70,
+        "functions": 80,
+        "lines": 80,
+        "statements": 80
+      }
+    }
+  }
+}
+```
+
+---
+
+## 16.2 Schema Validation de Configuração
+
+### 16.2.1 Validação com Zod
+
+```javascript
+// utils/configValidation.js
+
+import { z } from 'zod';
+
+const ServerSchema = z.object({
+  host: z.string().default('localhost'),
+  port: z.number().int().min(1).max(65535).default(25565),
+  username: z.string().min(1),
+  version: z.string().regex(/^\d+\.\d+\.\d+$/).default('1.20.4'),
+  auth: z.enum(['offline', 'microsoft', 'mojang']).default('offline')
+});
+
+const LLMProviderSchema = z.object({
+  type: z.enum(['google', 'nvidia', 'openrouter', 'ollama', 'openai']),
+  model: z.string(),
+  apiKey: z.string().startsWith('${').or(z.string().min(10))
+});
+
+const LLMConfigSchema = z.object({
+  mode: z.enum(['single', 'tiered']).default('single'),
+  model: z.string().optional(),
+  primary: LLMProviderSchema.optional(),
+  secondary: LLMProviderSchema.optional(),
+  codeModel: LLMProviderSchema.optional(),
+  temperature: z.object({
+    chat: z.number().min(0).max(2).default(0.7),
+    code: z.number().min(0).max(2).default(0.3)
+  }).default({ chat: 0.7, code: 0.3 })
+});
+
+const BotConfigSchema = z.object({
+  identity: z.object({
+    name: z.string().min(1),
+    displayName: z.string().min(1),
+    owner: z.string().min(1),
+    role: z.string().default('assistant')
+  }),
+  response: z.object({
+    mode: z.enum(['single', 'mention', 'auto']).default('auto'),
+    defaultPrefix: z.string().default('!')
+  })
+});
+
+const ConfigSchema = z.object({
+  server: ServerSchema,
+  llm: LLMConfigSchema,
+  bot: BotConfigSchema,
+  memory: z.object({
+    dbPath: z.string().default('./data/brain.db'),
+    embeddingModel: z.string().default('Xenova/multilingual-e5-small'),
+    similarityThreshold: z.number().min(0).max(1).default(0.85)
+  }).optional()
+});
+
+// Validação
+function validateConfig(config) {
+  try {
+    return ConfigSchema.parse(config);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      const messages = error.errors.map(e =>
+        `Config inválida em ${e.path.join('.')}: ${e.message}`
+      );
+      throw new Error(`Erro de validação:\n${messages.join('\n')}`);
+    }
+    throw error;
+  }
+}
+
+module.exports = { ConfigSchema, validateConfig };
+```
+
+---
+
+## 16.3 Migrações de Banco de Dados
+
+### 16.3.1 Sistema de Migrações
+
+```javascript
+// database/migrations.js
+
+const migrations = [
+  {
+    version: 1,
+    name: 'initial_schema',
+    up: `
+      CREATE TABLE IF NOT EXISTS skills_metadata (
+        id INTEGER PRIMARY KEY,
+        name TEXT UNIQUE,
+        description TEXT,
+        file_path TEXT,
+        embedding_source TEXT,
+        created_at DATETIME
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS skills_vss_local USING vec0(
+        embedding FLOAT[384]
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS skills_vss_api USING vec0(
+        embedding FLOAT[768]
+      );
+
+      CREATE TABLE IF NOT EXISTS facts (
+        id INTEGER PRIMARY KEY,
+        type TEXT,
+        key TEXT,
+        value TEXT,
+        created_at DATETIME,
+        updated_at DATETIME
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS facts_vss USING vec0(
+        embedding FLOAT[384]
+      );
+    `,
+    down: `
+      DROP TABLE IF EXISTS skills_metadata;
+      DROP TABLE IF EXISTS facts;
+      DROP TABLE IF EXISTS skills_vss_local;
+      DROP TABLE IF EXISTS skills_vss_api;
+      DROP TABLE IF EXISTS facts_vss;
+    `
+  },
+  {
+    version: 2,
+    name: 'add_executions_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS executions (
+        id INTEGER PRIMARY KEY,
+        command TEXT,
+        skill_used TEXT,
+        success BOOLEAN,
+        duration_ms INTEGER,
+        timestamp DATETIME
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_executions_timestamp ON executions(timestamp);
+    `,
+    down: `
+      DROP TABLE IF EXISTS executions;
+    `
+  },
+  {
+    version: 3,
+    name: 'add_checkpoints_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS checkpoints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME,
+        type TEXT,
+        data TEXT,
+        task_type TEXT,
+        task_progress REAL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_checkpoints_timestamp ON checkpoints(timestamp);
+    `,
+    down: `
+      DROP TABLE IF EXISTS checkpoints;
+    `
+  },
+  {
+    version: 4,
+    name: 'add_death_records_table',
+    up: `
+      CREATE TABLE IF NOT EXISTS death_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp DATETIME,
+        position TEXT,
+        cause TEXT,
+        inventory TEXT,
+        dimension TEXT,
+        recovered BOOLEAN DEFAULT 0,
+        recovered_at DATETIME
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_death_records_timestamp ON death_records(timestamp);
+    `,
+    down: `
+      DROP TABLE IF EXISTS death_records;
+    `
+  }
+];
+
+class MigrationManager {
+  constructor(db) {
+    this.db = db;
+  }
+
+  async init() {
+    // Cria tabela de version se não existir
+    await this.db.run(`
+      CREATE TABLE IF NOT EXISTS schema_version (
+        version INTEGER PRIMARY KEY,
+        applied_at DATETIME
+      )
+    `);
+
+    const currentVersion = await this.getCurrentVersion();
+    return currentVersion;
+  }
+
+  async getCurrentVersion() {
+    const row = await this.db.get('SELECT MAX(version) as version FROM schema_version');
+    return row?.version || 0;
+  }
+
+  async migrate() {
+    const currentVersion = await this.init();
+    const pendingMigrations = migrations.filter(m => m.version > currentVersion);
+
+    if (pendingMigrations.length === 0) {
+      logger.info('[Migrations] Banco de dados está atualizado');
+      return;
+    }
+
+    logger.info(`[Migrations] Executando ${pendingMigrations.length} migrações`);
+
+    for (const migration of pendingMigrations) {
+      await this.runMigration(migration);
+    }
+  }
+
+  async runMigration(migration) {
+    logger.info(`[Migrations] Executando: ${migration.name} (v${migration.version})`);
+
+    try {
+      await this.db.run('BEGIN TRANSACTION');
+      await this.db.run(migration.up);
+      await this.db.run(
+        'INSERT INTO schema_version (version, applied_at) VALUES (?, ?)',
+        [migration.version, new Date().toISOString()]
+      );
+      await this.db.run('COMMIT');
+      logger.info(`[Migrations] ${migration.name} aplicado com sucesso`);
+    } catch (error) {
+      await this.db.run('ROLLBACK');
+      logger.error(`[Migrations] Erro em ${migration.name}:`, error);
+      throw error;
+    }
+  }
+
+  async rollback(targetVersion) {
+    const currentVersion = await this.getCurrentVersion();
+
+    if (targetVersion >= currentVersion) {
+      throw new Error('Versão target deve ser menor que a atual');
+    }
+
+    const rollbackMigrations = migrations
+      .filter(m => m.version > targetVersion && m.version <= currentVersion)
+      .reverse();
+
+    for (const migration of rollbackMigrations) {
+      await this.runRollback(migration);
+    }
+  }
+
+  async runRollback(migration) {
+    logger.info(`[Migrations] Revertendo: ${migration.name}`);
+
+    try {
+      await this.db.run('BEGIN TRANSACTION');
+      await this.db.run(migration.down);
+      await this.db.run(
+        'DELETE FROM schema_version WHERE version = ?',
+        [migration.version]
+      );
+      await this.db.run('COMMIT');
+    } catch (error) {
+      await this.db.run('ROLLBACK');
+      throw error;
+    }
+  }
+}
+
+module.exports = { MigrationManager, migrations };
+```
+
+---
+
+## 16.4 Ordem de Inicialização
+
+### 16.4.1 Diagrama de Dependências
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        ORDEM DE INICIALIZAÇÃO                        │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  1. CONFIG & ENVIRONMENT                                            │
+│     ├── Load .env                                                   │
+│     ├── Load config.json                                             │
+│     ├── Validate schema                                             │
+│     └── Setup logger                                                 │
+│                                                                      │
+│  2. DATABASE                                                         │
+│     ├── Initialize SQLite                                            │
+│     ├── Load sqlite-vec extension                                    │
+│     └── Run migrations                                               │
+│                                                                      │
+│  3. EMBEDDINGS (se modo local)                                       │
+│     └── Load @huggingface/transformers (~250MB)                     │
+│                                                                      │
+│  4. MEMORY LAYER                                                     │
+│     ├── Init RAG                                                     │
+│     ├── Load facts                                                   │
+│     └── Load skill embeddings                                        │
+│                                                                      │
+│  5. LLM LAYER                                                        │
+│     ├── Init providers                                               │
+│     ├── Init router                                                  │
+│     └── Init circuit breaker                                         │
+│                                                                      │
+│  6. ROBUSTNESS LAYER ⭐                                              │
+│     ├── Init MetricsCollector                                        │
+│     ├── Init EventLogger                                             │
+│     ├── Init AlertSystem (+ Memory callbacks)                        │
+│     ├── Init CheckpointManager                                       │
+│     ├── Init DeathRecovery                                           │
+│     ├── Init StuckDetector                                           │
+│     ├── Init GracefulShutdown                                        │
+│     └── Init StateMachine                                            │
+│                                                                      │
+│  7. BOT CONNECTION                                                   │
+│     ├── Create mineflayer bot                                        │
+│     ├── Wait for spawn                                               │
+│     └── Restore from checkpoint                                      │
+│                                                                      │
+│  8. SKILLS LAYER                                                     │
+│     ├── Load base skills                                             │
+│     └── Load dynamic skills                                          │
+│                                                                      │
+│  9. AUTONOMY LAYER                                                   │
+│     ├── Init CurriculumManager                                       │
+│     ├── Init IdleLoop                                                │
+│     ├── Init TaskScheduler                                           │
+│     └── Init SurvivalMonitor                                         │
+│                                                                      │
+│  10. COMMUNITY LAYER (se enabled)                                    │
+│      ├── Init BotIdentity                                            │
+│      └── Announce presence                                           │
+│                                                                      │
+│  11. START                                                           │
+│      ├── Start monitoring loops                                     │
+│      ├── Start scheduled tasks                                      │
+│      └── Bot is ready!                                              │
+│                                                                      │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### 16.4.2 Código de Inicialização
+
+```javascript
+// src/index.js
+
+async function main() {
+  const startTime = Date.now();
+  logger.info('[ClawMC] Iniciando...');
+
+  try {
+    // 1. CONFIG & ENVIRONMENT
+    logger.info('[Init] Carregando configuração...');
+    dotenv.config();
+    const config = loadConfig('./config.json');
+    const validatedConfig = validateConfig(config);
+
+    // 2. DATABASE
+    logger.info('[Init] Inicializando banco de dados...');
+    const db = await initDatabase(validatedConfig.memory.dbPath);
+    const migrations = new MigrationManager(db);
+    await migrations.migrate();
+
+    // 3. EMBEDDINGS
+    let embeddings;
+    if (validatedConfig.memory?.mode !== 'api') {
+      logger.info('[Init] Carregando modelo de embeddings...');
+      embeddings = new EmbeddingsManager(validatedConfig.memory?.embeddings);
+      await embeddings.init();
+    }
+
+    // 4. MEMORY LAYER
+    logger.info('[Init] Inicializando memória...');
+    const rag = new RAGSystem(db, embeddings);
+    const facts = new FactsManager(db, embeddings);
+
+    // 5. LLM LAYER
+    logger.info('[Init] Inicializando LLM...');
+    const llmRouter = new LLMRouter(validatedConfig.llm);
+    const circuitBreaker = new CircuitBreaker(5, 60000);
+
+    // 6. ROBUSTNESS LAYER
+    logger.info('[Init] Inicializando robustness...');
+    const robustness = new RobustnessLayer(validatedConfig.robustness);
+    await robustness.init(/* dependencies */);
+
+    // 7. BOT CONNECTION
+    logger.info('[Init] Conectando ao servidor...');
+    const bot = await createBot(validatedConfig.server);
+
+    bot.on('spawn', async () => {
+      logger.info('[Bot] Conectado!');
+
+      // Restaurar estado
+      const restored = await robustness.restoreFromCheckpoint();
+      if (restored) {
+        logger.info('[Bot] Estado restaurado do checkpoint');
+      }
+
+      // 8. SKILLS LAYER
+      const skills = new SkillRegistry(bot, state, llmRouter);
+      await skills.loadBaseSkills();
+      await skills.loadDynamicSkills();
+
+      // 9. AUTONOMY LAYER
+      const autonomy = new AutonomyManager(bot, state, curriculum, skills);
+      autonomy.start();
+
+      // 10. COMMUNITY LAYER (se enabled)
+      let community = null;
+      if (validatedConfig.community?.enabled) {
+        community = new CommunityManager(bot, validatedConfig.community);
+        await community.init();
+      }
+
+      // 11. START
+      robustness.startMonitoring();
+      logger.info(`[ClawMC] Pronto em ${Date.now() - startTime}ms`);
+    });
+
+  } catch (error) {
+    logger.error('[Init] Falha na inicialização:', error);
+    process.exit(1);
+  }
+}
+```
+
+---
+
+## 16.5 Timeout Manager Global
+
+### 16.5.1 Gerenciador Centralizado
+
+```javascript
+// utils/timeoutManager.js
+
+class TimeoutManager {
+  constructor() {
+    this.timeouts = new Map();
+    this.defaults = {
+      skill: 30000,          // 30 segundos
+      compilation: 5000,      // 5 segundos
+      llm: 60000,            // 60 segundos
+      pathfinding: 120000,   // 2 minutos
+      checkpoint: 10000,     // 10 segundos
+      reconnection: 30000,   // 30 segundos
+      task: 1800000          // 30 minutos
+    };
+  }
+
+  // Executa com timeout
+  async withTimeout(promise, ms, operation = 'operation') {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error(`${operation} timeout após ${ms}ms`));
+        }, ms);
+
+        // Armazena para cancelamento
+        this.timeouts.set(timeout, { operation, ms });
+      })
+    ]).finally(() => {
+      const timeout = [...this.timeouts.keys()].find(t => t);
+      if (timeout) {
+        clearTimeout(timeout);
+        this.timeouts.delete(timeout);
+      }
+    });
+  }
+
+  // Timeout com cancelamento
+  createTimeout(callback, ms, operation) {
+    const timeout = setTimeout(() => {
+      logger.debug(`[Timeout] ${operation} executado após ${ms}ms`);
+      callback();
+    }, ms);
+
+    this.timeouts.set(timeout, { operation, ms, callback });
+    return timeout;
+  }
+
+  cancel(timeout) {
+    if (this.timeouts.has(timeout)) {
+      clearTimeout(timeout);
+      this.timeouts.delete(timeout);
+      return true;
+    }
+    return false;
+  }
+
+  // Cancela todos os timeouts de uma operação
+  cancelAll(operation) {
+    for (const [timeout, info] of this.timeouts) {
+      if (info.operation === operation) {
+        clearTimeout(timeout);
+        this.timeouts.delete(timeout);
+      }
+    }
+  }
+
+  // Obtém timeout padrão para tipo
+  getDefault(type) {
+    return this.defaults[type] || 30000;
+  }
+}
+
+module.exports = new TimeoutManager();
+```
+
+### 16.5.2 Uso nos Componentes
+
+```javascript
+// skills/executor.js
+const timeoutManager = require('../utils/timeoutManager');
+
+async executeSkill(skill, params) {
+  const timeout = config.skills?.timeout || timeoutManager.getDefault('skill');
+
+  return timeoutManager.withTimeout(
+    skill.execute(bot, params),
+    timeout,
+    `skill:${skill.name}`
+  );
+}
+
+// llm/router.js
+async callLLM(prompt) {
+  const timeout = config.llm?.timeout || timeoutManager.getDefault('llm');
+
+  return timeoutManager.withTimeout(
+    provider.generate(prompt),
+    timeout,
+    'llm_call'
+  );
+}
+```
+
+---
+
+## 16.6 Modo Dry-Run
+
+### 16.6.1 Mock do Servidor Minecraft
+
+```javascript
+// tests/mocks/server.mock.js
+
+class MockMinecraftServer {
+  constructor(config = {}) {
+    this.config = config;
+    this.players = new Map();
+    this.entities = new Map();
+    this.blocks = new Map();
+    this.time = 0;
+    this.weather = 'clear';
+  }
+
+  // Simula conexão de jogador
+  addPlayer(username, position = { x: 0, y: 64, z: 0 }) {
+    this.players.set(username, {
+      username,
+      position,
+      health: 20,
+      food: 20,
+      inventory: []
+    });
+    return this.players.get(username);
+  }
+
+  // Simula spawn de entidade
+  addEntity(type, position) {
+    const id = `${type}_${Date.now()}`;
+    this.entities.set(id, { type, position, id });
+    return id;
+  }
+
+  // Simula bloco em posição
+  setBlock(position, name, properties = {}) {
+    const key = `${position.x},${position.y},${position.z}`;
+    this.blocks.set(key, { name, position, properties });
+  }
+
+  // Simula evento de chat
+  emitChat(username, message) {
+    console.log(`[MockServer] ${username}: ${message}`);
+    // Emite para todos os bots conectados
+    return { username, message, timestamp: Date.now() };
+  }
+
+  // Avança tempo do jogo
+  advanceTime(ticks) {
+    this.time += ticks;
+  }
+
+  // Simula ciclo dia/noite
+  setDayTime(dayTime) {
+    this.time = dayTime;
+  }
+}
+
+// Bot mockado para testes
+function createMockBotForTesting() {
+  const server = new MockMinecraftServer();
+  const bot = createMockBot();
+
+  // Integra com servidor mock
+  bot._server = server;
+
+  // Simula eventos
+  bot.simulate = {
+    chat: (username, message) => {
+      bot.emit('chat', username, message);
+    },
+    death: (cause) => {
+      bot.health = 0;
+      bot.emit('death');
+    },
+    spawn: () => {
+      bot.emit('spawn');
+    },
+    damage: (amount) => {
+      bot.health = Math.max(0, bot.health - amount);
+      bot.emit('health', bot.health, bot.food);
+    }
+  };
+
+  return bot;
+}
+
+module.exports = { MockMinecraftServer, createMockBotForTesting };
+```
+
+### 16.6.2 Configuração Dry-Run
+
+```json
+// config.dryrun.json
+{
+  "server": {
+    "mode": "dry-run",
+    "mockDelays": true
+  },
+  "llm": {
+    "mode": "mock",
+    "mockResponses": {
+      "chat": "Resposta simulada do bot.",
+      "code": "async function execute(bot, params) { return { success: true }; }"
+    }
+  },
+  "memory": {
+    "mode": "mock",
+    "persistToDisk": false
+  },
+  "skills": {
+    "executeRealCode": false,
+    "mockExecutionTime": 1000
+  }
+}
+```
+
+### 16.6.3 Script de Teste Dry-Run
+
+```javascript
+// scripts/dry-run.js
+
+async function runDryRunTests() {
+  logger.info('[DryRun] Iniciando testes em modo simulado...');
+
+  // Carrega config de dry-run
+  const config = loadConfig('./config.dryrun.json');
+
+  // Cria bot mockado
+  const bot = createMockBotForTesting();
+
+  // Inicializa componentes com mocks
+  const state = new StateManager();
+  const skills = new SkillRegistry(bot, state);
+  const autonomy = new AutonomyManager(bot, state, skills);
+
+  // Testes
+  const tests = [
+    testCommandParsing,
+    testSkillExecution,
+    testDeathRecovery,
+    testAutonomousBehavior,
+    testMemoryFlow
+  ];
+
+  let passed = 0;
+  let failed = 0;
+
+  for (const test of tests) {
+    try {
+      await test(bot, config);
+      logger.info(`[DryRun] ✓ ${test.name}`);
+      passed++;
+    } catch (error) {
+      logger.error(`[DryRun] ✗ ${test.name}:`, error.message);
+      failed++;
+    }
+  }
+
+  logger.info(`[DryRun] Resultados: ${passed} passou, ${failed} falhou`);
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+async function testCommandParsing(bot, config) {
+  const parser = new CommandParser(config.bot.identity);
+  const result = parser.parse('Player', '!mine iron 64');
+  assert(result.intent === 'mine');
+  assert(result.args.length === 2);
+}
+
+async function testSkillExecution(bot, config) {
+  // Simula execução de skill
+}
+
+// ... outros testes
+```
+
+---
+
+## 16.7 Telemetria Opcional
+
+### 16.7.1 Sistema de Telemetria
+
+```javascript
+// utils/telemetry.js
+
+class Telemetry {
+  constructor(config) {
+    this.enabled = config.telemetry?.enabled || false;
+    this.endpoint = config.telemetry?.endpoint;
+    this.apiKey = config.telemetry?.apiKey;
+    this.buffer = [];
+    this.flushInterval = 60000; // 1 minuto
+  }
+
+  // Registra evento
+  track(event, data = {}) {
+    if (!this.enabled) return;
+
+    this.buffer.push({
+      event,
+      data,
+      timestamp: new Date().toISOString(),
+      botId: process.env.BOT_ID || 'unknown'
+    });
+
+    if (this.buffer.length >= 100) {
+      this.flush();
+    }
+  }
+
+  // Envia buffer
+  async flush() {
+    if (!this.enabled || this.buffer.length === 0) return;
+
+    const payload = [...this.buffer];
+    this.buffer = [];
+
+    try {
+      await fetch(this.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.apiKey}`
+        },
+        body: JSON.stringify({ events: payload })
+      });
+    } catch (error) {
+      // Silently fail - telemetria não deve afetar operação
+      this.buffer.unshift(...payload);
+    }
+  }
+
+  // Inicia flush periódico
+  start() {
+    if (!this.enabled) return;
+
+    setInterval(() => this.flush(), this.flushInterval);
+  }
+}
+
+// Eventos rastreados
+const TELEMETRY_EVENTS = {
+  // Uso
+  SKILL_EXECUTED: 'skill_executed',
+  LLM_CALL: 'llm_call',
+  COMMAND_RECEIVED: 'command_received',
+
+  // Performance
+  BOT_SPAWN: 'bot_spawn',
+  BOT_DEATH: 'bot_death',
+  BOT_STUCK: 'bot_stuck',
+
+  // Sistema
+  MEMORY_WARNING: 'memory_warning',
+  CHECKPOINT_SAVED: 'checkpoint_saved',
+  PROVIDER_FALLBACK: 'provider_fallback'
+};
+
+module.exports = { Telemetry, TELEMETRY_EVENTS };
+```
+
+### 16.7.2 Configuração
+
+```json
+{
+  "telemetry": {
+    "enabled": false,
+    "endpoint": "https://telemetry.example.com/api/events",
+    "apiKey": "${TELEMETRY_API_KEY}",
+    "events": [
+      "skill_executed",
+      "llm_call",
+      "bot_death",
+      "provider_fallback"
+    ]
+  }
+}
+```
+
+---
+
+## 16.8 Health Check HTTP
+
+### 16.8.1 Servidor HTTP para Monitoramento
+
+```javascript
+// utils/httpServer.js
+
+const http = require('http');
+
+class HealthServer {
+  constructor(port = 8080) {
+    this.port = port;
+    this.server = null;
+    this.robustness = null;
+  }
+
+  start(robustness) {
+    this.robustness = robustness;
+
+    this.server = http.createServer(async (req, res) => {
+      if (req.url === '/health') {
+        await this.handleHealth(req, res);
+      } else if (req.url === '/metrics') {
+        await this.handleMetrics(req, res);
+      } else if (req.url === '/ready') {
+        this.handleReady(req, res);
+      } else {
+        res.writeHead(404);
+        res.end('Not found');
+      }
+    });
+
+    this.server.listen(this.port, () => {
+      logger.info(`[HealthServer] Servidor de saúde iniciado na porta ${this.port}`);
+    });
+  }
+
+  async handleHealth(req, res) {
+    try {
+      const health = this.robustness?.getHealth() || { status: 'unknown' };
+      const statusCode = health.status === 'healthy' ? 200 : 503;
+
+      res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(health, null, 2));
+    } catch (error) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: error.message }));
+    }
+  }
+
+  async handleMetrics(req, res) {
+    try {
+      const metrics = this.robustness?.metrics?.export() || {};
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(metrics, null, 2));
+    } catch (error) {
+      res.writeHead(500);
+      res.end(JSON.stringify({ error: error.message }));
+    }
+  }
+
+  handleReady(req, res) {
+    // Verifica se está pronto para receber comandos
+    const isReady = this.robustness?.stateMachine?.state === 'idle';
+
+    res.writeHead(isReady ? 200 : 503);
+    res.end(JSON.stringify({ ready: isReady }));
+  }
+
+  stop() {
+    if (this.server) {
+      this.server.close();
+    }
+  }
+}
+
+module.exports = { HealthServer };
+```
+
+### 16.8.2 Endpoints
+
+| Endpoint | Descrição | Status Codes |
+|----------|-----------|--------------|
+| `GET /health` | Saúde completa do bot | 200 (healthy), 503 (degraded) |
+| `GET /metrics` | Métricas detalhadas | 200 |
+| `GET /ready` | Pronto para comandos | 200 (ready), 503 (busy) |
 
 ---
 

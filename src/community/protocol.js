@@ -39,8 +39,8 @@ class CommunicationProtocol {
 
     // Limit message length (Minecraft chat limit)
     if (encoded.length > 256) {
-      logger.warn(`Message too long (${encoded.length} chars), truncating`);
-      return encoded.slice(0, 256);
+      logger.warn(`Message too long (${encoded.length} chars), rejecting`);
+      throw new Error(`Message exceeds 256 character limit (${encoded.length} chars)`);
     }
 
     return encoded;

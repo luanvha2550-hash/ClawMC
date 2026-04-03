@@ -26,12 +26,13 @@ describe('SharedFacts', () => {
   });
 
   describe('shareFact', () => {
-    it('should share fact with peers', async () => {
+    it('should queue fact for sync', async () => {
       mockDb.run.mockResolvedValue({ changes: 1 });
 
       await sharedFacts.shareFact('chest_iron', { x: 150, y: 63, z: 100 });
 
-      expect(mockProtocol.encode).toHaveBeenCalledWith('SYNC', expect.anything());
+      expect(sharedFacts.pendingSync).toHaveLength(1);
+      expect(sharedFacts.pendingSync[0].key).toBe('chest_iron');
     });
 
     it('should store shared fact locally', async () => {
