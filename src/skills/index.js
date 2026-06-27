@@ -4,6 +4,7 @@
 import { getLogger } from '../utils/logger.js';
 import { readdir } from 'fs/promises';
 import { join } from 'path';
+import { pathToFileURL } from 'node:url';
 
 const logger = getLogger().module('SkillRegistry');
 
@@ -190,7 +191,7 @@ class SkillRegistry {
 
       for (const file of jsFiles) {
         try {
-          const module = await import(join(skillsDir, file));
+          const module = await import(pathToFileURL(join(skillsDir, file)).href);
           const skill = module.default || module;
 
           if (skill.name && skill.execute) {

@@ -1,7 +1,8 @@
 // src/skills/base/collect.js
 // Collect skill - Collect dropped items within range
 
-import { GoalNear } from 'mineflayer-pathfinder';
+import pathfinder from 'mineflayer-pathfinder';
+const { GoalNear } = pathfinder.goals;
 import { getLogger } from '../../utils/logger.js';
 import { withTimeout, distanceBetween } from '../utils/navigation.js';
 

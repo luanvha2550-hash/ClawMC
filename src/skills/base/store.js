@@ -1,7 +1,8 @@
 // src/skills/base/store.js
 // Store skill - Store items in chest
 
-import { GoalNear } from 'mineflayer-pathfinder';
+import pathfinder from 'mineflayer-pathfinder';
+const { GoalNear } = pathfinder.goals;
 import { getLogger } from '../../utils/logger.js';
 import { withTimeout } from '../utils/navigation.js';
 

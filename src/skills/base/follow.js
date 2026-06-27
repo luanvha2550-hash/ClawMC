@@ -1,7 +1,8 @@
 // src/skills/base/follow.js
 // Follow skill - Continuous follow player
 
-import { GoalNear } from 'mineflayer-pathfinder';
+import pathfinder from 'mineflayer-pathfinder';
+const { GoalNear } = pathfinder.goals;
 import { getLogger } from '../../utils/logger.js';
 
 const logger = getLogger().module('FollowSkill');

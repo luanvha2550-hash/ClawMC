@@ -144,7 +144,7 @@ export class EmbeddingsManager {
       });
 
       this.extractor = await pipeline('feature-extraction', this.modelName, {
-        quantized: this.quantized,
+        dtype: this.quantized ? 'q8' : 'fp32',
         progress_callback: (progress) => {
           if (progress.status === 'downloading') {
             logger.debug(`Model download progress: ${Math.round(progress.progress || 0)}%`);
