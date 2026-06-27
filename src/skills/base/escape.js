@@ -1,7 +1,8 @@
 // src/skills/base/escape.js
 // Escape skill - Flee from danger
 
-import { GoalBlock } from 'mineflayer-pathfinder';
+import pathfinder from 'mineflayer-pathfinder';
+const { GoalBlock } = pathfinder.goals;
 import { getLogger } from '../../utils/logger.js';
 import { withTimeout, distanceBetween } from '../utils/navigation.js';
 

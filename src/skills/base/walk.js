@@ -1,7 +1,8 @@
 // src/skills/base/walk.js
 // Walk skill - Navigate to coordinates
 
-import { GoalBlock, GoalNear } from 'mineflayer-pathfinder';
+import pathfinder from 'mineflayer-pathfinder';
+const { GoalBlock, GoalNear } = pathfinder.goals;
 import { getLogger } from '../../utils/logger.js';
 import { withTimeout } from '../utils/navigation.js';
 

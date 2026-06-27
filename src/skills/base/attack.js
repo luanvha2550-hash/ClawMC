@@ -1,7 +1,8 @@
 // src/skills/base/attack.js
 // Attack skill - Attack entities by type
 
-import { GoalNear } from 'mineflayer-pathfinder';
+import pathfinder from 'mineflayer-pathfinder';
+const { GoalNear } = pathfinder.goals;
 import { getLogger } from '../../utils/logger.js';
 import { withTimeout, distanceBetween } from '../utils/navigation.js';
 

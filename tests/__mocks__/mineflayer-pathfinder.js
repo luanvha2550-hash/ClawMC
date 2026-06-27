@@ -58,11 +58,15 @@ export {
 };
 
 export default {
-  GoalBlock,
-  GoalNear,
-  GoalXZ,
-  GoalY,
-  GoalGetToBlock,
-  GoalFollow,
-  GoalBreakBlock
+  pathfinder: jest.fn(),
+  Movements: jest.fn(),
+  goals: {
+    GoalBlock,
+    GoalNear,
+    GoalXZ,
+    GoalY,
+    GoalGetToBlock,
+    GoalFollow,
+    GoalBreakBlock
+  }
 };
