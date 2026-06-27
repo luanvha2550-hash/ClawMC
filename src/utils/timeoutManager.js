@@ -13,6 +13,7 @@ import { getLogger } from './logger.js';
 class TimeoutManager {
   constructor() {
     this.timeouts = new Map();
+    this.namedTimeouts = new Map();
     this.logger = getLogger().module('TimeoutManager');
 
     this.defaults = {
@@ -93,8 +94,45 @@ class TimeoutManager {
       if (info.operation === operation) {
         clearTimeout(timeoutId);
         this.timeouts.delete(timeoutId);
+        this.namedTimeouts.delete(info.operation);
       }
     }
+  }
+
+  /**
+   * Create a named timeout, keyed by name so it can be cleared by name.
+   * Replaces any existing timeout with the same name.
+   * @param {string} name - Unique name for the timeout
+   * @param {Function} callback - Function to call when timeout fires
+   * @param {number} ms - Timeout in milliseconds
+   * @returns {Object} - Timeout identifier
+   */
+  setTimeout(name, callback, ms) {
+    this.clearTimeout(name);
+    const timeoutId = setTimeout(() => {
+      this.namedTimeouts.delete(name);
+      this.timeouts.delete(timeoutId);
+      callback();
+    }, ms);
+    this.namedTimeouts.set(name, timeoutId);
+    this.timeouts.set(timeoutId, { operation: name, ms, callback });
+    return timeoutId;
+  }
+
+  /**
+   * Cancel a named timeout
+   * @param {string} name - Name of the timeout to cancel
+   * @returns {boolean} - True if a timeout was cancelled, false if not found
+   */
+  clearTimeout(name) {
+    const timeoutId = this.namedTimeouts.get(name);
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+      this.timeouts.delete(timeoutId);
+      this.namedTimeouts.delete(name);
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -123,6 +161,7 @@ class TimeoutManager {
       clearTimeout(timeoutId);
     }
     this.timeouts.clear();
+    this.namedTimeouts.clear();
   }
 
   /**
