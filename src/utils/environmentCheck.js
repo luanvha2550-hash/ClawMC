@@ -30,7 +30,7 @@ export async function checkEnvironment() {
   // 2. isolated-vm availability (optional)
   let hasIsolatedVM = false;
   try {
-    require('isolated-vm');
+    await import('isolated-vm');
     hasIsolatedVM = true;
   } catch (e) {
     issues.push('isolated-vm nao disponivel. Sandbox alternativo (SES) sera usado.');
@@ -38,14 +38,14 @@ export async function checkEnvironment() {
 
   // 3. better-sqlite3
   try {
-    require('better-sqlite3');
+    await import('better-sqlite3');
   } catch (e) {
     issues.push('better-sqlite3 nao disponivel. Verifique instalacao.');
   }
 
   // 4. sqlite-vec
   try {
-    require('sqlite-vec');
+    await import('sqlite-vec');
   } catch (e) {
     issues.push('sqlite-vec nao disponivel. Busca semantica nao funcionara.');
   }

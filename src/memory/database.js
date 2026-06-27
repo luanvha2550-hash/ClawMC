@@ -5,6 +5,7 @@
 
 import Database from 'better-sqlite3';
 import { getLogger } from '../utils/logger.js';
+import { MigrationManager } from './migrations.js';
 
 const logger = getLogger().module('Database');
 
@@ -51,6 +52,16 @@ export async function initDatabase(dbPath = './data/brain.db') {
     logger.error('Failed to initialize database:', error);
     throw error;
   }
+}
+
+/**
+ * Run all pending database migrations
+ * @param {Database} dbInstance - Database instance returned by initDatabase
+ * @returns {Promise<void>}
+ */
+export async function runMigrations(dbInstance) {
+  const manager = new MigrationManager(dbInstance);
+  await manager.migrate();
 }
 
 /**

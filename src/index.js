@@ -42,6 +42,7 @@ import { RoleManager } from './community/roles.js';
 
 import dotenv from 'dotenv';
 import { createBot } from 'mineflayer';
+import { pathToFileURL } from 'node:url';
 
 dotenv.config();
 
@@ -632,7 +633,7 @@ async function main() {
 export { ClawMC };
 
 // Run if executed directly
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch(error => {
     console.error('Fatal error:', error);
     process.exit(1);
