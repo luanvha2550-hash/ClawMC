@@ -255,9 +255,8 @@ class ClawMC {
     // Reconnection manager
     this.reconnection = new ReconnectionManager(this.bot, this.robustness, this.config.bot);
 
-    // Circadian events
+    // Circadian events (listener registration happens in the constructor)
     this.circadian = new CircadianEvents(this.bot);
-    this.circadian.start();
 
     // Add to components
     this.components.bot = this.bot;
@@ -553,9 +552,9 @@ class ClawMC {
       }
     });
 
-    // Circadian event handler
-    this.circadian?.on?.('event', (event) => {
-      this.handleCircadian(event);
+    // Circadian event handler (CircadianEvents emits on the bot as 'circadian')
+    this.bot.on('circadian', (data) => {
+      this.handleCircadian(data);
     });
 
     // Start idle loop
